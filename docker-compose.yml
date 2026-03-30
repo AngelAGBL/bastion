@@ -1,0 +1,34 @@
+services:
+  mongo:
+    image: mongo:8.2
+    volumes:
+      - mongo_data:/data/db
+    environment:
+      GLIBC_TUNABLES: glibc.cpu.hwcaps=-SHSTK
+    ports:
+      - "27017:27017"
+
+  app:
+    image: bastion
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+      - "3001:3001"
+    environment:
+      PORT_HTTP: 3000
+      PORT_WS: 3001
+      MONGO_URI: mongodb://mongo:27017/bastion
+      JWT_SECRET: change-me-to-a-random-secret-at-least-32-chars!!
+    volumes:
+      - ./src:/app/src:z
+      - ./views:/app/views:z
+      - ./public:/app/public:z
+      - ca_data:/app/data
+    depends_on:
+      - mongo
+
+volumes:
+  mongo_data:
+  ca_data:

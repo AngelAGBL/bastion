@@ -1,0 +1,32 @@
+<div class="card">
+  <form method="POST" action="/dashboard/endpoints">
+    <div class="form-group">
+      <label>Nombre</label>
+      <input name="name" placeholder="Servidor DB" required>
+    </div>
+    <div class="row">
+      <div class="grow form-group">
+        <label>Host</label>
+        <input name="host" placeholder="192.168.1.10" required>
+      </div>
+      <div style="width:120px" class="form-group">
+        <label>Puerto</label>
+        <input name="port" type="number" placeholder="5432" required>
+      </div>
+    </div>
+    <button type="submit" class="btn btn-primary">Crear endpoint</button>
+  </form>
+</div>
+
+<% for (const ep of endpoints) { %>
+<div class="card">
+  <div class="row mb">
+    <strong class="grow"><%= ep.name %></strong>
+    <form method="POST" action="/dashboard/endpoints/<%= ep._id %>/delete" style="margin:0">
+      <button type="submit" class="btn btn-danger btn-sm" onclick="return confirm('¿Eliminar endpoint?')">Eliminar</button>
+    </form>
+  </div>
+  <div class="mono"><%= ep.host %>:<%= ep.port %></div>
+  <div class="mono mt">target-id: <%= ep.targetId %></div>
+</div>
+<% } %>

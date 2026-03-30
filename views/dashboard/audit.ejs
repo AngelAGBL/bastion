@@ -1,0 +1,65 @@
+<div class="log-filters row mb">
+  <form method="GET" action="/dashboard/audit" class="row grow">
+    <select name="certId">
+      <option value="">Todos los certificados</option>
+      <% for (const c of certs) { %>
+        <option value="<%= c._id %>" <%= query.certId === String(c._id) ? 'selected' : '' %>><%= c.name %></option>
+      <% } %>
+    </select>
+    <select name="endpointId">
+      <option value="">Todos los endpoints</option>
+      <% for (const ep of endpoints) { %>
+        <option value="<%= ep._id %>" <%= query.endpointId === String(ep._id) ? 'selected' : '' %>><%= ep.name %></option>
+      <% } %>
+    </select>
+    <select name="direction">
+      <option value="">Ambas direcciones</option>
+      <option value="upload" <%= query.direction === 'upload' ? 'selected' : '' %>>↑ Cliente → Destino</option>
+      <option value="download" <%= query.direction === 'download' ? 'selected' : '' %>>↓ Destino → Cliente</option>
+    </select>
+    <button type="submit" class="btn btn-primary btn-sm">Filtrar</button>
+    <a href="/dashboard/audit" class="btn btn-ghost btn-sm">Limpiar</a>
+  </form>
+</div>
+
+<div class="log-scroll">
+  <table class="log-table">
+    <thead>
+      <tr>
+        <th>Hora</th>
+        <th>Certificado</th>
+        <th>Endpoint</th>
+        <th>Dir</th>
+        <th>Bytes</th>
+        <th>Contenido</th>
+      </tr>
+    </thead>
+    <tbody>
+      <% if (logs.length === 0) { %>
+        <tr><td colspan="6" style="text-align:center;color:var(--muted);padding:2rem">Sin registros</td></tr>
+      <% } %>
+      <% for (const log of logs) { %>
+        <tr>
+          <td class="mono"><%= new Date(log.ts).toLocaleString('es') %></td>
+          <td><%= log.certName || log.fingerprint?.slice(0,12) + '…' %></td>
+          <td><%= log.endpointName || (log.targetHost + ':' + log.targetPort) %></td>
+          <td class="<%= log.direction === 'upload' ? 'dir-up' : 'dir-down' %>">
+            <%= log.direction === 'upload' ? '↑' : '↓' %>
+          </td>
+          <td class="log-size"><%= log.bytes %></td>
+          <td class="log-preview"><%= log.preview %></td>
+        </tr>
+      <% } %>
+    </tbody>
+  </table>
+</div>
+
+<% if (logs.length >= limit) { %>
+<div class="mt" style="text-align:center">
+  <a href="/dashboard/audit?<%= new URLSearchParams({...query, before: logs[logs.length-1].ts}).toString() %>" class="btn btn-ghost btn-sm">Cargar más</a>
+</div>
+<% } %>
+
+<div class="mt" style="text-align:right">
+  <button class="btn btn-ghost btn-sm" id="btn-live">● En vivo</button>
+</div>

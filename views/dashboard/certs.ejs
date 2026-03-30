@@ -1,0 +1,55 @@
+<% if (typeof error !== 'undefined' && error) { %>
+  <div class="alert alert-error mb"><%= error %></div>
+<% } %>
+
+<div class="card">
+  <form method="POST" action="/dashboard/certs">
+    <div class="form-group">
+      <label>Nombre del certificado</label>
+      <input name="name" placeholder="laptop-juan" required>
+    </div>
+    <div class="form-group">
+      <label>Certificado público del cliente (PEM)</label>
+      <textarea name="publicPem" rows="8" placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----" required></textarea>
+    </div>
+    <div class="row">
+      <button type="submit" class="btn btn-primary">Registrar certificado</button>
+      <a href="/api/certs/ca" class="btn btn-ghost btn-sm" download="bastion-ca.pem">Descargar CA</a>
+    </div>
+  </form>
+</div>
+
+<% for (const c of certs) { %>
+<div class="card">
+  <div class="row mb">
+    <strong class="grow"><%= c.name %></strong>
+    <form method="POST" action="/dashboard/certs/<%= c._id %>/delete" style="margin:0">
+      <button type="submit" class="btn btn-danger btn-sm" onclick="return confirm('¿Eliminar certificado?')">Eliminar</button>
+    </form>
+  </div>
+  <div class="mono mb">fingerprint: <%= c.fingerprint %></div>
+  <label>Endpoints permitidos</label>
+  <div class="chip-list mb">
+    <% for (const tid of c.allowedEndpoints) {
+      const ep = endpoints.find(e => e.targetId === tid);
+    %>
+      <span class="badge">
+        <%= ep ? ep.name : tid %>
+        <form method="POST" action="/dashboard/certs/<%= c._id %>/revoke-endpoint" style="display:inline;margin:0">
+          <input type="hidden" name="targetId" value="<%= tid %>">
+          <button type="submit" class="chip-x" style="background:none;border:none;color:inherit;cursor:pointer;padding:0;font-size:inherit">&times;</button>
+        </form>
+      </span>
+    <% } %>
+  </div>
+  <form method="POST" action="/dashboard/certs/<%= c._id %>/grant-endpoint" class="row">
+    <select name="targetId" class="grow">
+      <option value="">Agregar endpoint...</option>
+      <% for (const ep of endpoints.filter(e => !c.allowedEndpoints.includes(e.targetId))) { %>
+        <option value="<%= ep.targetId %>"><%= ep.name %> (<%= ep.host %>:<%= ep.port %>)</option>
+      <% } %>
+    </select>
+    <button type="submit" class="btn btn-primary btn-sm">+</button>
+  </form>
+</div>
+<% } %>
