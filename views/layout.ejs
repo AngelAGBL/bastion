@@ -10,9 +10,9 @@
 <% if (typeof user !== 'undefined' && user) { %>
 <nav class="navbar">
   <div class="container row">
-    <a href="/dashboard/certs" class="logo">Bastion</a>
+    <a href="/dashboard/users" class="logo">Bastion</a>
     <div class="nav-links">
-      <a href="/dashboard/certs" class="nav-link<%= typeof tab !== 'undefined' && tab === 'certs' ? ' active' : '' %>">Certificados</a>
+      <a href="/dashboard/users" class="nav-link<%= typeof tab !== 'undefined' && tab === 'users' ? ' active' : '' %>">Usuarios</a>
       <a href="/dashboard/endpoints" class="nav-link<%= typeof tab !== 'undefined' && tab === 'endpoints' ? ' active' : '' %>">Puntos de Acceso</a>
       <a href="/dashboard/audit" class="nav-link<%= typeof tab !== 'undefined' && tab === 'audit' ? ' active' : '' %>">Auditoría</a>
     </div>
@@ -26,7 +26,7 @@
 <main class="container">
   <%- body %>
 </main>
-<% if (typeof clientScript !== 'undefined') { %>
+<% if (typeof clientScript !== 'undefined' && clientScript) { %>
 <script src="<%= clientScript %>"></script>
 <% } %>
 </body>

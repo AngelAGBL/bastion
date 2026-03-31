@@ -9,7 +9,7 @@ export function registerAuditRoutes(app) {
   app.get("/dashboard/audit", pageAuth, async (req, res) => {
     const db = getDB();
     const query = req.query || {};
-    const filter = buildFilter(req.userId, query);
+    const filter = buildFilter(query);
 
     const logs = await db.collection("audit_logs")
       .find(filter)
@@ -18,14 +18,11 @@ export function registerAuditRoutes(app) {
       .toArray();
 
     const [certs, endpoints] = await Promise.all([
-      db.collection("certificates").find({ userId: req.userId }).project({ clientCert: 0 }).toArray(),
-      db.collection("endpoints").find({ userId: req.userId }).toArray(),
+      db.collection("certificates").find().project({ clientCert: 0 }).toArray(),
+      db.collection("endpoints").find().toArray(),
     ]);
 
-    // JSON response for live polling
-    if (query.fmt === "json") {
-      return res.json(logs);
-    }
+    if (query.fmt === "json") return res.json(logs);
 
     render(res, "dashboard/audit", {
       user: req.user, tab: "audit", logs, certs, endpoints,
@@ -34,24 +31,12 @@ export function registerAuditRoutes(app) {
   });
 }
 
-function buildFilter(userId, query) {
-  const filter = { userId };
-
-  if (query.certId) {
-    try { filter.certId = new ObjectId(query.certId); } catch {}
-  }
-  if (query.endpointId) {
-    try { filter.endpointId = new ObjectId(query.endpointId); } catch {}
-  }
-  if (query.direction === "upload" || query.direction === "download") {
-    filter.direction = query.direction;
-  }
-  if (query.before) {
-    filter.ts = { $lt: new Date(query.before) };
-  }
-  if (query.after) {
-    filter.ts = { ...(filter.ts || {}), $gt: new Date(query.after) };
-  }
-
+function buildFilter(query) {
+  const filter = {};
+  if (query.certId) { try { filter.certId = new ObjectId(query.certId); } catch {} }
+  if (query.endpointId) { try { filter.endpointId = new ObjectId(query.endpointId); } catch {} }
+  if (query.direction === "upload" || query.direction === "download") filter.direction = query.direction;
+  if (query.before) filter.ts = { $lt: new Date(query.before) };
+  if (query.after) filter.ts = { ...(filter.ts || {}), $gt: new Date(query.after) };
   return filter;
 }

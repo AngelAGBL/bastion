@@ -23,7 +23,7 @@ function compileView(name) {
 
 /**
  * Renders a view inside the layout.
- * Usage: render(res, "dashboard/certs", { certs, endpoints, user, tab: "certs" })
+ * Usage: render(res, "dashboard/users", { users, endpoints, user, tab: "users" })
  */
 export function render(res, view, data = {}) {
   const bodyHtml = compileView(view)(data);

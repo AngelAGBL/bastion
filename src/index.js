@@ -3,7 +3,7 @@ import express from "ultimate-express";
 import { connectDB } from "./db.js";
 import { startWSServer } from "./ws-server.js";
 import { registerAuthRoutes } from "./routes/auth.routes.js";
-import { registerCertsRoutes } from "./routes/certs.routes.js";
+import { registerUsersRoutes } from "./routes/users.routes.js";
 import { registerEndpointsRoutes } from "./routes/endpoints.routes.js";
 import { registerAuditRoutes } from "./routes/audit.routes.js";
 import path from "node:path";
@@ -19,14 +19,12 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 app.use(express.static(PUBLIC));
 
-// Routes
 registerAuthRoutes(app);
-registerCertsRoutes(app);
+registerUsersRoutes(app);
 registerEndpointsRoutes(app);
 registerAuditRoutes(app);
 
-// Root redirect
-app.get("/", (_req, res) => res.redirect("/dashboard/certs"));
+app.get("/", (_req, res) => res.redirect("/dashboard/users"));
 
 async function main() {
   await connectDB();

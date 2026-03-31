@@ -63,3 +63,19 @@ label{display:block;font-size:.8rem;color:var(--muted);margin-bottom:.25rem}
 .log-filters{margin-bottom:.75rem}
 .log-size{font-size:.75rem;color:var(--muted)}
 .log-preview{max-width:400px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:monospace}
+
+/* Users page */
+.sub-tabs{border-bottom:1px solid var(--border);padding-bottom:.5rem}
+.sub-panel.hidden{display:none}
+.ep-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:.5rem;margin-top:.5rem}
+.ep-card{font-size:.85rem}
+.user-card{margin-bottom:1rem}
+
+.time-left{color:var(--danger);font-size:.8rem;font-weight:600;font-family:monospace;white-space:nowrap}
+
+/* Modal */
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);display:flex;justify-content:center;align-items:center;z-index:100}
+.modal-overlay.hidden{display:none}
+.modal-box{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:1.25rem;width:90%;max-width:440px;box-shadow:0 8px 32px rgba(0,0,0,.4)}
+
+.ep-active{border-color:var(--success);box-shadow:0 0 0 1px var(--success)}

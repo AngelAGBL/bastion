@@ -20,7 +20,7 @@ export function registerAuthRoutes(app) {
       }
       const token = await createToken(user._id);
       res.setHeader("Set-Cookie", `token=${token}; HttpOnly; Path=/; SameSite=Strict; Max-Age=28800`);
-      res.redirect("/dashboard/certs");
+      res.redirect("/dashboard/users");
     } catch {
       render(res, "auth/login", { error: "Error del servidor" });
     }
