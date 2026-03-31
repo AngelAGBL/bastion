@@ -19,14 +19,75 @@
 </div>
 
 <% for (const ep of endpoints) { %>
-<div class="card">
+<div class="card" id="ep-<%= ep._id %>">
   <div class="row mb">
-    <strong class="grow"><%= ep.name %></strong>
+    <strong class="grow" id="ep-name-<%= ep._id %>"><%= ep.name %></strong>
+    <button class="btn btn-ghost btn-sm" onclick="openEditEp('<%= ep._id %>','<%= ep.name %>','<%= ep.host %>',<%= ep.port %>)">✎</button>
     <form method="POST" action="/dashboard/endpoints/<%= ep._id %>/delete" style="margin:0">
       <button type="submit" class="btn btn-danger btn-sm" onclick="return confirm('¿Eliminar endpoint?')">Eliminar</button>
     </form>
   </div>
-  <div class="mono"><%= ep.host %>:<%= ep.port %></div>
+  <div class="mono" id="ep-addr-<%= ep._id %>"><%= ep.host %>:<%= ep.port %></div>
   <div class="mono mt">target-id: <%= ep.targetId %></div>
 </div>
 <% } %>
+
+<!-- Modal editar endpoint -->
+<div id="modal-ep" class="modal-overlay hidden" onclick="if(event.target===this)closeEpModal()">
+  <div class="modal-box">
+    <div class="row mb">
+      <strong class="grow">Editar endpoint</strong>
+      <button class="btn btn-ghost btn-sm" onclick="closeEpModal()">×</button>
+    </div>
+    <input type="hidden" id="modal-ep-id">
+    <div class="form-group">
+      <label>Nombre</label>
+      <input id="modal-ep-name">
+    </div>
+    <div class="row">
+      <div class="grow form-group">
+        <label>Host</label>
+        <input id="modal-ep-host">
+      </div>
+      <div style="width:120px" class="form-group">
+        <label>Puerto</label>
+        <input id="modal-ep-port" type="number">
+      </div>
+    </div>
+    <button class="btn btn-primary btn-sm" onclick="saveEp()">Guardar</button>
+  </div>
+</div>
+
+<script>
+function openEditEp(id, name, host, port) {
+  document.getElementById("modal-ep-id").value = id;
+  document.getElementById("modal-ep-name").value = name;
+  document.getElementById("modal-ep-host").value = host;
+  document.getElementById("modal-ep-port").value = port;
+  document.getElementById("modal-ep").classList.remove("hidden");
+}
+function closeEpModal() {
+  document.getElementById("modal-ep").classList.add("hidden");
+}
+async function saveEp() {
+  const id = document.getElementById("modal-ep-id").value;
+  const name = document.getElementById("modal-ep-name").value.trim();
+  const host = document.getElementById("modal-ep-host").value.trim();
+  const port = document.getElementById("modal-ep-port").value.trim();
+  try {
+    const res = await fetch("/api/endpoints/" + id, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, host, port: Number(port) }),
+    });
+    if (!res.ok) throw new Error();
+    // Update UI in place
+    document.getElementById("ep-name-" + id).textContent = name;
+    document.getElementById("ep-addr-" + id).textContent = host + ":" + port;
+    // Update edit button params
+    const btn = document.querySelector(`#ep-${id} .btn-ghost`);
+    btn.setAttribute("onclick", `openEditEp('${id}','${name}','${host}',${port})`);
+    closeEpModal();
+  } catch { alert("Error al guardar"); }
+}
+</script>

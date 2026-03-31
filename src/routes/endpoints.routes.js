@@ -4,8 +4,22 @@ import { getDB } from "../db.js";
 import { pageAuth, authMiddleware } from "../auth.js";
 import { render } from "../render.js";
 
+const BASE32 = "abcdefghijklmnopqrstuvwxyz234567";
+
 function generateTargetId() {
-  return crypto.randomBytes(8).toString("base64url");
+  const bytes = crypto.randomBytes(10); // 10 bytes = 16 base32 chars
+  let id = "";
+  let bits = 0, val = 0;
+  for (const b of bytes) {
+    val = (val << 8) | b;
+    bits += 8;
+    while (bits >= 5) {
+      bits -= 5;
+      id += BASE32[(val >> bits) & 0x1f];
+    }
+  }
+  if (bits > 0) id += BASE32[(val << (5 - bits)) & 0x1f];
+  return id;
 }
 
 export function registerEndpointsRoutes(app) {
@@ -28,6 +42,28 @@ export function registerEndpointsRoutes(app) {
       });
     } catch {}
     res.redirect("/dashboard/endpoints");
+  });
+
+  // Update (JSON)
+  app.put("/api/endpoints/:id", authMiddleware, async (req, res) => {
+    try {
+      const { name, host, port } = req.body;
+      const update = {};
+      if (name) update.name = name;
+      if (host) update.host = host;
+      if (port) update.port = Number(port);
+      if (!Object.keys(update).length) return res.status(400).json({ error: "nothing to update" });
+      const db = getDB();
+      const r = await db.collection("endpoints").findOneAndUpdate(
+        { _id: new ObjectId(req.params.id) },
+        { $set: update },
+        { returnDocument: "after" }
+      );
+      if (!r) return res.status(404).json({ error: "not found" });
+      res.json(r);
+    } catch {
+      res.status(500).json({ error: "error" });
+    }
   });
 
   // Delete (form POST)

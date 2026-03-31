@@ -1,16 +1,35 @@
 import crypto from "node:crypto";
 import net from "node:net";
-import tls from "node:tls";
 import https from "node:https";
 import { WebSocketServer } from "ws";
 import { ensureCA, generateServerCert, getCACert } from "./ca.js";
 import { getDB } from "./db.js";
 
 const PREVIEW_MAX = 256;
+const JWT_PREFIX = "authorization.bearer.";
 
 function log(...args) {
   const msg = args.map(a => typeof a === "object" ? JSON.stringify(a) : String(a)).join(" ");
   console.log(`[ws ${new Date().toISOString()}] ${msg}`);
+}
+
+/**
+ * Extract targetId from wstunnel's sec-websocket-protocol JWT.
+ * The header looks like: "v1, authorization.bearer.<JWT>"
+ * The JWT payload has { r: "<targetId>", rp: 0, ... }
+ */
+function extractTargetFromProtocol(header) {
+  if (!header) return null;
+  const idx = header.indexOf(JWT_PREFIX);
+  if (idx === -1) return null;
+  const jwt = header.slice(idx + JWT_PREFIX.length);
+  try {
+    const payload = jwt.split(".")[1];
+    const json = JSON.parse(Buffer.from(payload, "base64url").toString());
+    return json.r || null;
+  } catch {
+    return null;
+  }
 }
 
 export async function startWSServer(port) {
@@ -18,73 +37,70 @@ export async function startWSServer(port) {
   const serverTls = generateServerCert();
   const caCertPem = getCACert();
 
-  // HTTPS server with mTLS
   const server = https.createServer({
     key: serverTls.key,
     cert: serverTls.cert,
     ca: [caCertPem],
     requestCert: true,
-    rejectUnauthorized: false, // we verify manually
+    rejectUnauthorized: false,
   });
 
-  // Health check endpoint
-  server.on("request", (req, res) => {
+  server.on("request", (_req, res) => {
     res.writeHead(200, { "Content-Type": "text/plain" });
     res.end("bastion-ws alive\n");
   });
 
-  // WebSocket server on top of the HTTPS server
-  const wss = new WebSocketServer({ noServer: true, skipUTF8Validation: true });
+  // handleProtocols: respond with "v1" so wstunnel knows we speak its protocol
+  const wss = new WebSocketServer({
+    noServer: true,
+    skipUTF8Validation: true,
+    handleProtocols: (protocols) => {
+      if (protocols.has("v1")) return "v1";
+      return false;
+    },
+  });
 
   server.on("upgrade", async (req, socket, head) => {
-    const targetId = req.headers["x-target"];
-    log(`upgrade: target=${targetId || "-"}`);
+    // Extract targetId from wstunnel JWT in sec-websocket-protocol
+    const protoHeader = req.headers["sec-websocket-protocol"];
+    const targetId = extractTargetFromProtocol(protoHeader);
 
-    // Extract client cert from TLS socket
+    log(`upgrade: path=${req.url} target=${targetId || "-"}`);
+
+    // mTLS: extract client cert
     const tlsSocket = req.socket;
     const peerCert = tlsSocket.getPeerCertificate(true);
     const hasCert = peerCert && peerCert.raw && peerCert.raw.length > 0;
 
-    log(`tls: authorized=${tlsSocket.authorized} hasCert=${hasCert}`);
-
     if (!hasCert || !targetId) {
-      log("REJECT: no cert or no target");
       socket.write("HTTP/1.1 404 Not Found\r\n\r\n");
       socket.destroy();
       return;
     }
 
-    // Verify cert against our CA
     try {
       const x509 = new crypto.X509Certificate(peerCert.raw);
-      const caKey = crypto.createPublicKey(caCertPem);
-      if (!x509.verify(caKey)) {
-        log("REJECT: cert not signed by our CA");
+      if (!x509.verify(crypto.createPublicKey(caCertPem))) {
         socket.write("HTTP/1.1 404 Not Found\r\n\r\n");
         socket.destroy();
         return;
       }
-    } catch (e) {
-      log("REJECT: cert verify error:", e.message);
+    } catch {
       socket.write("HTTP/1.1 404 Not Found\r\n\r\n");
       socket.destroy();
       return;
     }
 
     const fingerprint = crypto.createHash("sha256").update(peerCert.raw).digest("hex");
-    log(`cert fp=${fingerprint.slice(0, 16)}…`);
+    log(`fp=${fingerprint.slice(0, 16)}…`);
 
-    // DB lookups
     try {
       const db = getDB();
-
       const cert = await db.collection("certificates").findOne({ fingerprint });
       if (!cert) { log("REJECT: cert not in DB"); socket.write("HTTP/1.1 404 Not Found\r\n\r\n"); socket.destroy(); return; }
-      log(`cert: ${cert.name} (user=${cert.tunnelUserId})`);
 
       const endpoint = await db.collection("endpoints").findOne({ targetId });
-      if (!endpoint) { log(`REJECT: target ${targetId} not found`); socket.write("HTTP/1.1 404 Not Found\r\n\r\n"); socket.destroy(); return; }
-      log(`endpoint: ${endpoint.name} → ${endpoint.host}:${endpoint.port}`);
+      if (!endpoint) { log("REJECT: target not found"); socket.write("HTTP/1.1 404 Not Found\r\n\r\n"); socket.destroy(); return; }
 
       const now = new Date();
       const window = await db.collection("access_windows").findOne({
@@ -94,50 +110,50 @@ export async function startWSServer(port) {
         from: { $lte: now },
         until: { $gte: now },
       });
-      if (!window) { log("REJECT: no active window"); socket.write("HTTP/1.1 404 Not Found\r\n\r\n"); socket.destroy(); return; }
+      if (!window) { log("REJECT: no window"); socket.write("HTTP/1.1 404 Not Found\r\n\r\n"); socket.destroy(); return; }
 
-      log("ACCESS GRANTED — upgrading WebSocket");
+      log(`GRANTED: ${cert.name} → ${endpoint.host}:${endpoint.port}`);
 
-      // Accept the WebSocket upgrade
       wss.handleUpgrade(req, socket, head, (ws) => {
-        // Disable mask validation — wstunnel sends unmasked frames for performance
         if (ws._receiver) ws._receiver._isServer = false;
 
-        log(`ws open: ${cert.name} → ${endpoint.host}:${endpoint.port}`);
-
-        // Open TCP to target
         const tcp = net.createConnection({ host: endpoint.host, port: endpoint.port });
+        tcp.setNoDelay(true);
+        let tcpReady = false;
+        const buf = [];
 
         tcp.on("connect", () => {
           log(`tcp connected ${endpoint.host}:${endpoint.port}`);
+          tcpReady = true;
+          for (const b of buf) tcp.write(b);
+          buf.length = 0;
         });
 
         tcp.on("data", (data) => {
-          if (ws.readyState === ws.OPEN) ws.send(data);
+          if (ws.readyState === 1) ws.send(data);
           logTraffic(cert, endpoint, "download", data);
         });
 
         ws.on("message", (data) => {
-          const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
-          if (!tcp.destroyed) tcp.write(buf);
-          logTraffic(cert, endpoint, "upload", buf);
+          const chunk = Buffer.isBuffer(data) ? data : Buffer.from(data);
+          if (tcpReady) tcp.write(chunk);
+          else buf.push(chunk);
+          logTraffic(cert, endpoint, "upload", chunk);
         });
 
-        tcp.on("error", (e) => { log(`tcp error: ${e.message}`); ws.close(); });
-        tcp.on("close", () => { log("tcp closed"); ws.close(); });
-        ws.on("close", (code) => { log(`ws close code=${code}`); tcp.destroy(); });
-        ws.on("error", (e) => { log(`ws error: ${e.message}`); tcp.destroy(); });
+        tcp.on("error", (e) => { log(`tcp err: ${e.message}`); ws.close(); });
+        tcp.on("close", () => ws.close());
+        ws.on("close", (code) => { log(`ws closed code=${code}`); tcp.destroy(); });
+        ws.on("error", (e) => { log(`ws err: ${e.message}`); tcp.destroy(); });
       });
     } catch (e) {
-      log("upgrade error:", e.message);
+      log("error:", e.message);
       socket.write("HTTP/1.1 404 Not Found\r\n\r\n");
       socket.destroy();
     }
   });
 
-  server.listen(port, () => {
-    log(`mTLS WebSocket tunnel on :${port}`);
-  });
+  server.listen(port, () => log(`mTLS WS tunnel on :${port}`));
 }
 
 function makePreview(buf) {
