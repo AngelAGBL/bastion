@@ -72,12 +72,18 @@ export function generateServerCert() {
     const keyFile = path.join(tmpDir, "key.pem");
     const csrFile = path.join(tmpDir, "csr.pem");
     const certFile = path.join(tmpDir, "cert.pem");
+    const extFile = path.join(tmpDir, "ext.cnf");
     const serial = crypto.randomBytes(8).toString("hex");
+
+    // SAN config so the cert is valid for localhost, 127.0.0.1, and any hostname
+    fs.writeFileSync(extFile, [
+      "subjectAltName=DNS:localhost,DNS:bastion-tunnel,DNS:*,IP:127.0.0.1,IP:0.0.0.0",
+    ].join("\n"));
 
     execSync(`openssl ecparam -genkey -name prime256v1 -noout -out "${keyFile}"`, { stdio: "pipe" });
     execSync(`openssl req -new -key "${keyFile}" -out "${csrFile}" -subj "/CN=bastion-tunnel"`, { stdio: "pipe" });
     execSync(
-      `openssl x509 -req -in "${csrFile}" -CA "${CA_CERT}" -CAkey "${CA_KEY}" -set_serial 0x${serial} -out "${certFile}" -days 365`,
+      `openssl x509 -req -in "${csrFile}" -CA "${CA_CERT}" -CAkey "${CA_KEY}" -set_serial 0x${serial} -out "${certFile}" -days 365 -extfile "${extFile}"`,
       { stdio: "pipe" }
     );
     return {

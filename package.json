@@ -12,6 +12,7 @@
     "ejs": "^5.0.1",
     "jose": "^6.0.11",
     "mongodb": "^6.16.0",
-    "ultimate-express": "^2.0.17"
+    "ultimate-express": "^2.0.17",
+    "ws": "^8.20.0"
   }
 }

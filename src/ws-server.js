@@ -1,133 +1,142 @@
 import crypto from "node:crypto";
 import net from "node:net";
-import fs from "node:fs";
-import path from "node:path";
-import uWS from "uWebSockets.js";
-import { ensureCA, generateServerCert, getCACertPath } from "./ca.js";
+import tls from "node:tls";
+import https from "node:https";
+import { WebSocketServer } from "ws";
+import { ensureCA, generateServerCert, getCACert } from "./ca.js";
 import { getDB } from "./db.js";
-import { fileURLToPath } from "node:url";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PREVIEW_MAX = 256;
+
+function log(...args) {
+  const msg = args.map(a => typeof a === "object" ? JSON.stringify(a) : String(a)).join(" ");
+  console.log(`[ws ${new Date().toISOString()}] ${msg}`);
+}
 
 export async function startWSServer(port) {
   ensureCA();
   const serverTls = generateServerCert();
+  const caCertPem = getCACert();
 
-  // Write server cert/key to temp files for uWS
-  const dataDir = path.join(__dirname, "..", "data", "ca");
-  const srvKeyPath = path.join(dataDir, "srv-key.pem");
-  const srvCertPath = path.join(dataDir, "srv-cert.pem");
-  fs.writeFileSync(srvKeyPath, serverTls.key);
-  fs.writeFileSync(srvCertPath, serverTls.cert);
-
-  const caCertPem = fs.readFileSync(getCACertPath(), "utf-8");
-  const caPublicKey = crypto.createPublicKey(caCertPem);
-
-  const app = uWS.SSLApp({
-    key_file_name: srvKeyPath,
-    cert_file_name: srvCertPath,
-    ca_file_name: getCACertPath(),
+  // HTTPS server with mTLS
+  const server = https.createServer({
+    key: serverTls.key,
+    cert: serverTls.cert,
+    ca: [caCertPem],
+    requestCert: true,
+    rejectUnauthorized: false, // we verify manually
   });
 
-  app.ws("/*", {
-    maxPayloadLength: 16 * 1024 * 1024,
-    idleTimeout: 120,
+  // Health check endpoint
+  server.on("request", (req, res) => {
+    res.writeHead(200, { "Content-Type": "text/plain" });
+    res.end("bastion-ws alive\n");
+  });
 
-    upgrade: async (res, req, context) => {
-      const targetId = req.getHeader("x-target");
-      const secKey = req.getHeader("sec-websocket-key");
-      const secProto = req.getHeader("sec-websocket-protocol");
-      const secExt = req.getHeader("sec-websocket-extensions");
+  // WebSocket server on top of the HTTPS server
+  const wss = new WebSocketServer({ noServer: true, skipUTF8Validation: true });
 
-      let aborted = false;
-      res.onAborted(() => { aborted = true; });
+  server.on("upgrade", async (req, socket, head) => {
+    const targetId = req.headers["x-target"];
+    log(`upgrade: target=${targetId || "-"}`);
 
-      // Get client certificate
-      let clientCertDer;
-      try {
-        clientCertDer = res.getX509Certificate();
-      } catch {
-        if (!aborted) res.cork(() => res.writeStatus("404 Not Found").end());
+    // Extract client cert from TLS socket
+    const tlsSocket = req.socket;
+    const peerCert = tlsSocket.getPeerCertificate(true);
+    const hasCert = peerCert && peerCert.raw && peerCert.raw.length > 0;
+
+    log(`tls: authorized=${tlsSocket.authorized} hasCert=${hasCert}`);
+
+    if (!hasCert || !targetId) {
+      log("REJECT: no cert or no target");
+      socket.write("HTTP/1.1 404 Not Found\r\n\r\n");
+      socket.destroy();
+      return;
+    }
+
+    // Verify cert against our CA
+    try {
+      const x509 = new crypto.X509Certificate(peerCert.raw);
+      const caKey = crypto.createPublicKey(caCertPem);
+      if (!x509.verify(caKey)) {
+        log("REJECT: cert not signed by our CA");
+        socket.write("HTTP/1.1 404 Not Found\r\n\r\n");
+        socket.destroy();
         return;
       }
+    } catch (e) {
+      log("REJECT: cert verify error:", e.message);
+      socket.write("HTTP/1.1 404 Not Found\r\n\r\n");
+      socket.destroy();
+      return;
+    }
 
-      if (!clientCertDer || !targetId) {
-        if (!aborted) res.cork(() => res.writeStatus("404 Not Found").end());
-        return;
-      }
+    const fingerprint = crypto.createHash("sha256").update(peerCert.raw).digest("hex");
+    log(`cert fp=${fingerprint.slice(0, 16)}…`);
 
-      try {
-        // Verify client cert was signed by our CA
-        const x509 = new crypto.X509Certificate(clientCertDer);
-        if (!x509.verify(caPublicKey)) {
-          if (!aborted) res.cork(() => res.writeStatus("404 Not Found").end());
-          return;
-        }
+    // DB lookups
+    try {
+      const db = getDB();
 
-        // Compute fingerprint from DER
-        const derBuf = Buffer.isBuffer(clientCertDer) ? clientCertDer
-          : clientCertDer instanceof ArrayBuffer ? Buffer.from(clientCertDer)
-          : Buffer.from(x509.raw);
-        const fingerprint = crypto.createHash("sha256").update(derBuf).digest("hex");
+      const cert = await db.collection("certificates").findOne({ fingerprint });
+      if (!cert) { log("REJECT: cert not in DB"); socket.write("HTTP/1.1 404 Not Found\r\n\r\n"); socket.destroy(); return; }
+      log(`cert: ${cert.name} (user=${cert.tunnelUserId})`);
 
-        const db = getDB();
-        const cert = await db.collection("certificates").findOne({ fingerprint });
-        if (!cert) { if (!aborted) res.cork(() => res.writeStatus("404 Not Found").end()); return; }
+      const endpoint = await db.collection("endpoints").findOne({ targetId });
+      if (!endpoint) { log(`REJECT: target ${targetId} not found`); socket.write("HTTP/1.1 404 Not Found\r\n\r\n"); socket.destroy(); return; }
+      log(`endpoint: ${endpoint.name} → ${endpoint.host}:${endpoint.port}`);
 
-        const endpoint = await db.collection("endpoints").findOne({ targetId });
-        if (!endpoint) { if (!aborted) res.cork(() => res.writeStatus("404 Not Found").end()); return; }
-
-        // Check access window — lookup by tunnelUserId + endpointId
-        const now = new Date();
-        const window = await db.collection("access_windows").findOne({
-          tunnelUserId: cert.tunnelUserId,
-          endpointId: endpoint._id,
-          active: true,
-          from: { $lte: now },
-          until: { $gte: now },
-        });
-        if (!window) { if (!aborted) res.cork(() => res.writeStatus("404 Not Found").end()); return; }
-
-        if (!aborted) {
-          res.cork(() => {
-            res.upgrade({ cert, endpoint }, secKey, secProto, secExt, context);
-          });
-        }
-      } catch {
-        if (!aborted) res.cork(() => res.writeStatus("404 Not Found").end());
-      }
-    },
-
-    open: (ws) => {
-      const { cert, endpoint } = ws.getUserData();
-      const tcp = net.createConnection({ host: endpoint.host, port: endpoint.port });
-
-      tcp.on("data", (data) => {
-        try { ws.send(data, true); } catch {}
-        logTraffic(cert, endpoint, "download", data);
+      const now = new Date();
+      const window = await db.collection("access_windows").findOne({
+        tunnelUserId: cert.tunnelUserId,
+        endpointId: endpoint._id,
+        active: true,
+        from: { $lte: now },
+        until: { $gte: now },
       });
-      tcp.on("close", () => { try { ws.close(); } catch {} });
-      tcp.on("error", () => { try { ws.close(); } catch {} });
+      if (!window) { log("REJECT: no active window"); socket.write("HTTP/1.1 404 Not Found\r\n\r\n"); socket.destroy(); return; }
 
-      ws._tcp = tcp;
-    },
+      log("ACCESS GRANTED — upgrading WebSocket");
 
-    message: (ws, message) => {
-      const { cert, endpoint } = ws.getUserData();
-      const buf = Buffer.from(message);
-      if (ws._tcp && !ws._tcp.destroyed) ws._tcp.write(buf);
-      logTraffic(cert, endpoint, "upload", buf);
-    },
+      // Accept the WebSocket upgrade
+      wss.handleUpgrade(req, socket, head, (ws) => {
+        // Disable mask validation — wstunnel sends unmasked frames for performance
+        if (ws._receiver) ws._receiver._isServer = false;
 
-    close: (ws) => {
-      if (ws._tcp) ws._tcp.destroy();
-    },
+        log(`ws open: ${cert.name} → ${endpoint.host}:${endpoint.port}`);
+
+        // Open TCP to target
+        const tcp = net.createConnection({ host: endpoint.host, port: endpoint.port });
+
+        tcp.on("connect", () => {
+          log(`tcp connected ${endpoint.host}:${endpoint.port}`);
+        });
+
+        tcp.on("data", (data) => {
+          if (ws.readyState === ws.OPEN) ws.send(data);
+          logTraffic(cert, endpoint, "download", data);
+        });
+
+        ws.on("message", (data) => {
+          const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
+          if (!tcp.destroyed) tcp.write(buf);
+          logTraffic(cert, endpoint, "upload", buf);
+        });
+
+        tcp.on("error", (e) => { log(`tcp error: ${e.message}`); ws.close(); });
+        tcp.on("close", () => { log("tcp closed"); ws.close(); });
+        ws.on("close", (code) => { log(`ws close code=${code}`); tcp.destroy(); });
+        ws.on("error", (e) => { log(`ws error: ${e.message}`); tcp.destroy(); });
+      });
+    } catch (e) {
+      log("upgrade error:", e.message);
+      socket.write("HTTP/1.1 404 Not Found\r\n\r\n");
+      socket.destroy();
+    }
   });
 
-  app.listen(port, (sock) => {
-    if (sock) console.log(`[ws] mTLS tunnel (uWS SSLApp) on :${port}`);
-    else console.error("[ws] failed to listen on port", port);
+  server.listen(port, () => {
+    log(`mTLS WebSocket tunnel on :${port}`);
   });
 }
 
