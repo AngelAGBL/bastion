@@ -3,7 +3,6 @@
 <div class="row mb">
   <input id="search-users" placeholder="Buscar usuario..." style="max-width:240px" oninput="filterUsers(this.value)">
   <div class="grow"></div>
-  <a href="/api/ca.pem" class="btn btn-ghost btn-sm" download="bastion-ca.pem">⬇ CA</a>
   <input id="new-user-name" placeholder="Nombre nuevo usuario" style="max-width:200px">
   <button class="btn btn-primary btn-sm" onclick="createUser()">+ Agregar</button>
 </div>
@@ -15,39 +14,29 @@
       <strong class="grow"><%= tu.name %></strong>
       <button class="btn btn-danger btn-sm" onclick="deleteUser('<%= tu._id %>')">Eliminar</button>
     </div>
-    <div class="sub-tabs row mb">
-      <button class="btn btn-sm btn-primary" onclick="showSub(this,'certs','<%= tu._id %>')">Certificados</button>
-      <button class="btn btn-sm btn-ghost" onclick="showSub(this,'access','<%= tu._id %>')">Endpoints</button>
+
+    <!-- Generar certificado -->
+    <div class="row mb gen-cert-row">
+      <input id="cert-name-<%= tu._id %>" placeholder="Nombre del certificado" style="max-width:200px">
+      <select id="cert-ep-<%= tu._id %>" style="width:auto">
+        <option value="">Endpoint...</option>
+        <% for (const ep of endpoints) { %>
+          <option value="<%= ep._id %>"><%= ep.name %> (<%= ep.host %>:<%= ep.port %>)</option>
+        <% } %>
+      </select>
+      <select id="cert-dur-<%= tu._id %>" style="width:auto">
+        <option value="1">1 día</option>
+        <option value="7">1 semana</option>
+        <option value="30">1 mes</option>
+        <option value="365" selected>1 año</option>
+      </select>
+      <button class="btn btn-primary btn-sm" onclick="generateCert('<%= tu._id %>')">Generar Auth</button>
     </div>
-    <div id="certs-<%= tu._id %>" class="sub-panel">
-      <button class="btn btn-primary btn-sm mb" onclick="openSignCsr('<%= tu._id %>')">+ Firmar CSR</button>
-      <div id="cert-list-<%= tu._id %>"></div>
-    </div>
-    <div id="access-<%= tu._id %>" class="sub-panel hidden">
-      <div id="access-list-<%= tu._id %>"></div>
-    </div>
+
+    <!-- Endpoints con sus certificados -->
+    <div id="ep-certs-<%= tu._id %>"></div>
   </div>
 <% } %>
-</div>
-
-<!-- Modal firmar CSR -->
-<div id="modal-sign" class="modal-overlay hidden">
-  <div class="modal-box">
-    <div class="row mb">
-      <strong class="grow">Firmar CSR</strong>
-      <button class="btn btn-ghost btn-sm" onclick="closeModal('modal-sign')">×</button>
-    </div>
-    <input type="hidden" id="modal-sign-uid">
-    <div class="form-group">
-      <label>Nombre</label>
-      <input id="modal-sign-name" placeholder="laptop-dev">
-    </div>
-    <div class="form-group">
-      <label>CSR (PEM)</label>
-      <textarea id="modal-sign-csr" rows="5" placeholder="-----BEGIN CERTIFICATE REQUEST-----"></textarea>
-    </div>
-    <button class="btn btn-primary btn-sm" onclick="submitSignCsr()">Firmar</button>
-  </div>
 </div>
 
 <!-- Modal editar certificado -->
@@ -58,13 +47,10 @@
       <button class="btn btn-ghost btn-sm" onclick="closeModal('modal-edit')">×</button>
     </div>
     <input type="hidden" id="modal-edit-cert-id">
+    <input type="hidden" id="modal-edit-uid">
     <div class="form-group">
       <label>Nombre</label>
       <input id="modal-edit-name">
-    </div>
-    <div class="form-group">
-      <label>Nuevo CSR (opcional)</label>
-      <textarea id="modal-edit-csr" rows="4" placeholder="-----BEGIN CERTIFICATE REQUEST-----"></textarea>
     </div>
     <button class="btn btn-primary btn-sm" onclick="saveEditCert()">Guardar</button>
   </div>

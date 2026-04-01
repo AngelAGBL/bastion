@@ -1,5 +1,11 @@
 <div class="log-filters row mb">
   <form method="GET" action="/dashboard/audit" class="row grow">
+    <select name="userId">
+      <option value="">Todos los usuarios</option>
+      <% for (const tu of tunnelUsers) { %>
+        <option value="<%= tu._id %>" <%= query.userId === String(tu._id) ? 'selected' : '' %>><%= tu.name %></option>
+      <% } %>
+    </select>
     <select name="certId">
       <option value="">Todos los certificados</option>
       <% for (const c of certs) { %>
@@ -27,20 +33,23 @@
     <thead>
       <tr>
         <th>Hora</th>
+        <th>Usuario</th>
         <th>Certificado</th>
         <th>Endpoint</th>
         <th>Dir</th>
         <th>Bytes</th>
         <th>Contenido</th>
+        <th></th>
       </tr>
     </thead>
     <tbody>
       <% if (logs.length === 0) { %>
-        <tr><td colspan="6" style="text-align:center;color:var(--muted);padding:2rem">Sin registros</td></tr>
+        <tr><td colspan="8" style="text-align:center;color:var(--muted);padding:2rem">Sin registros</td></tr>
       <% } %>
       <% for (const log of logs) { %>
-        <tr>
+        <tr data-ts="<%= log.ts %>">
           <td class="mono"><%= new Date(log.ts).toLocaleString('es') %></td>
+          <td><%= log.userName || '—' %></td>
           <td><%= log.certName || log.fingerprint?.slice(0,12) + '…' %></td>
           <td><%= log.endpointName || (log.targetHost + ':' + log.targetPort) %></td>
           <td class="<%= log.direction === 'upload' ? 'dir-up' : 'dir-down' %>">
@@ -48,6 +57,7 @@
           </td>
           <td class="log-size"><%= log.bytes %></td>
           <td class="log-preview"><%= log.preview %></td>
+          <td><button class="btn btn-ghost btn-sm" onclick="viewRaw('<%= log._id %>')">👁</button></td>
         </tr>
       <% } %>
     </tbody>
@@ -62,4 +72,16 @@
 
 <div class="mt" style="text-align:right">
   <button class="btn btn-ghost btn-sm" id="btn-live">● En vivo</button>
+</div>
+
+<!-- Modal contenido completo -->
+<div id="modal-raw" class="modal-overlay hidden">
+  <div class="modal-box" style="max-width:700px">
+    <div class="row mb">
+      <strong class="grow">Contenido</strong>
+      <button class="btn btn-ghost btn-sm" id="btn-toggle-hex">Hex</button>
+      <button class="btn btn-ghost btn-sm" onclick="document.getElementById('modal-raw').classList.add('hidden')">×</button>
+    </div>
+    <pre id="raw-content" style="max-height:60vh;overflow:auto;background:var(--bg);padding:.75rem;border-radius:6px;font-size:.8rem;white-space:pre-wrap;word-break:break-all"></pre>
+  </div>
 </div>

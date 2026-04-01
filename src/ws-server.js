@@ -2,34 +2,15 @@ import crypto from "node:crypto";
 import net from "node:net";
 import https from "node:https";
 import { WebSocketServer } from "ws";
+import { ObjectId } from "mongodb";
 import { ensureCA, generateServerCert, getCACert } from "./ca.js";
 import { getDB } from "./db.js";
 
 const PREVIEW_MAX = 256;
-const JWT_PREFIX = "authorization.bearer.";
 
 function log(...args) {
   const msg = args.map(a => typeof a === "object" ? JSON.stringify(a) : String(a)).join(" ");
   console.log(`[ws ${new Date().toISOString()}] ${msg}`);
-}
-
-/**
- * Extract targetId from wstunnel's sec-websocket-protocol JWT.
- * The header looks like: "v1, authorization.bearer.<JWT>"
- * The JWT payload has { r: "<targetId>", rp: 0, ... }
- */
-function extractTargetFromProtocol(header) {
-  if (!header) return null;
-  const idx = header.indexOf(JWT_PREFIX);
-  if (idx === -1) return null;
-  const jwt = header.slice(idx + JWT_PREFIX.length);
-  try {
-    const payload = jwt.split(".")[1];
-    const json = JSON.parse(Buffer.from(payload, "base64url").toString());
-    return json.r || null;
-  } catch {
-    return null;
-  }
 }
 
 export async function startWSServer(port) {
@@ -50,7 +31,6 @@ export async function startWSServer(port) {
     res.end("bastion-ws alive\n");
   });
 
-  // handleProtocols: respond with "v1" so wstunnel knows we speak its protocol
   const wss = new WebSocketServer({
     noServer: true,
     skipUTF8Validation: true,
@@ -61,18 +41,15 @@ export async function startWSServer(port) {
   });
 
   server.on("upgrade", async (req, socket, head) => {
-    // Extract targetId from wstunnel JWT in sec-websocket-protocol
-    const protoHeader = req.headers["sec-websocket-protocol"];
-    const targetId = extractTargetFromProtocol(protoHeader);
-
-    log(`upgrade: path=${req.url} target=${targetId || "-"}`);
+    log(`upgrade: path=${req.url}`);
 
     // mTLS: extract client cert
     const tlsSocket = req.socket;
     const peerCert = tlsSocket.getPeerCertificate(true);
     const hasCert = peerCert && peerCert.raw && peerCert.raw.length > 0;
 
-    if (!hasCert || !targetId) {
+    if (!hasCert) {
+      log("REJECT: no client cert");
       socket.write("HTTP/1.1 404 Not Found\r\n\r\n");
       socket.destroy();
       return;
@@ -81,6 +58,7 @@ export async function startWSServer(port) {
     try {
       const x509 = new crypto.X509Certificate(peerCert.raw);
       if (!x509.verify(crypto.createPublicKey(caCertPem))) {
+        log("REJECT: cert not signed by CA");
         socket.write("HTTP/1.1 404 Not Found\r\n\r\n");
         socket.destroy();
         return;
@@ -96,12 +74,20 @@ export async function startWSServer(port) {
 
     try {
       const db = getDB();
+
+      // Find cert → get its linked endpoint
       const cert = await db.collection("certificates").findOne({ fingerprint });
       if (!cert) { log("REJECT: cert not in DB"); socket.write("HTTP/1.1 404 Not Found\r\n\r\n"); socket.destroy(); return; }
 
-      const endpoint = await db.collection("endpoints").findOne({ targetId });
-      if (!endpoint) { log("REJECT: target not found"); socket.write("HTTP/1.1 404 Not Found\r\n\r\n"); socket.destroy(); return; }
+      // Resolve tunnel user name
+      let userName = null;
+      try { const tu = await db.collection("tunnel_users").findOne({ _id: new ObjectId(cert.tunnelUserId) }); userName = tu?.name || null; } catch {}
+      cert._userName = userName;
 
+      const endpoint = await db.collection("endpoints").findOne({ _id: cert.endpointId });
+      if (!endpoint) { log("REJECT: endpoint not found"); socket.write("HTTP/1.1 404 Not Found\r\n\r\n"); socket.destroy(); return; }
+
+      // Check access window
       const now = new Date();
       const window = await db.collection("access_windows").findOne({
         tunnelUserId: cert.tunnelUserId,
@@ -157,17 +143,14 @@ export async function startWSServer(port) {
 }
 
 function makePreview(buf) {
-  const str = buf.toString("utf-8", 0, Math.min(buf.length, PREVIEW_MAX));
-  if (/[\x00-\x08\x0E-\x1F]/.test(str.slice(0, 64))) {
-    return buf.toString("hex", 0, Math.min(buf.length, 64)) + (buf.length > 64 ? "…" : "");
-  }
-  return str + (buf.length > PREVIEW_MAX ? "…" : "");
+  return buf.toString("utf-8", 0, Math.min(buf.length, PREVIEW_MAX)).replace(/[\x00-\x08\x0E-\x1F]/g, "�");
 }
 
 function logTraffic(cert, endpoint, direction, data) {
   const db = getDB();
   db.collection("audit_logs").insertOne({
     userId: cert.tunnelUserId,
+    userName: cert._userName || null,
     certId: cert._id,
     certName: cert.name,
     fingerprint: cert.fingerprint,
@@ -178,6 +161,7 @@ function logTraffic(cert, endpoint, direction, data) {
     direction,
     bytes: data.length,
     preview: makePreview(data),
+    rawHex: data.toString("hex"),
     ts: new Date(),
   }).catch(() => {});
 }

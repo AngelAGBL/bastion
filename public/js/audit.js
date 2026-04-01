@@ -5,7 +5,6 @@
   let timer = null;
   let lastTs = null;
 
-  // Grab the latest timestamp from existing rows
   const rows = tbody.querySelectorAll("tr[data-ts]");
   if (rows.length) lastTs = rows[0].dataset.ts;
 
@@ -32,12 +31,13 @@
         tr.dataset.ts = log.ts;
         tr.innerHTML = `
           <td class="mono">${new Date(log.ts).toLocaleString("es")}</td>
+          <td>${esc(log.userName || "—")}</td>
           <td>${esc(log.certName || log.fingerprint?.slice(0, 12) + "…")}</td>
           <td>${esc(log.endpointName || log.targetHost + ":" + log.targetPort)}</td>
           <td class="${log.direction === "upload" ? "dir-up" : "dir-down"}">${log.direction === "upload" ? "↑" : "↓"}</td>
           <td class="log-size">${log.bytes}</td>
-          <td class="log-preview">${esc(log.preview)}</td>`;
-        // Remove "sin registros" placeholder
+          <td class="log-preview">${esc(log.preview)}</td>
+          <td><button class="btn btn-ghost btn-sm" onclick="viewRaw('${log._id}')">👁</button></td>`;
         const placeholder = tbody.querySelector("td[colspan]");
         if (placeholder) placeholder.parentElement.remove();
         tbody.prepend(tr);
@@ -52,4 +52,40 @@
     d.textContent = s || "";
     return d.innerHTML;
   }
+
+  // --- Raw content modal ---
+  let _rawData = null;
+  let _showHex = false;
+  const modal = document.getElementById("modal-raw");
+  const pre = document.getElementById("raw-content");
+  const btnHex = document.getElementById("btn-toggle-hex");
+
+  modal.addEventListener("click", e => { if (e.target === modal) modal.classList.add("hidden"); });
+
+  btnHex.addEventListener("click", () => {
+    _showHex = !_showHex;
+    btnHex.textContent = _showHex ? "Raw" : "Hex";
+    renderRaw();
+  });
+
+  function renderRaw() {
+    if (!_rawData) return;
+    pre.textContent = _showHex ? _rawData.hex : _rawData.raw;
+  }
+
+  window.viewRaw = async function (id) {
+    _rawData = null;
+    _showHex = false;
+    btnHex.textContent = "Hex";
+    pre.textContent = "Cargando...";
+    modal.classList.remove("hidden");
+    try {
+      const res = await fetch("/api/audit/" + id + "/raw");
+      if (!res.ok) throw new Error();
+      _rawData = await res.json();
+      renderRaw();
+    } catch {
+      pre.textContent = "Error al cargar contenido.";
+    }
+  };
 })();

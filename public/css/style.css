@@ -79,3 +79,10 @@ label{display:block;font-size:.8rem;color:var(--muted);margin-bottom:.25rem}
 .modal-box{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:1.25rem;width:90%;max-width:440px;box-shadow:0 8px 32px rgba(0,0,0,.4)}
 
 .ep-active{border-color:var(--success);box-shadow:0 0 0 1px var(--success)}
+
+/* Cert cards */
+.cert-card{margin-bottom:.5rem}
+.pass-display{min-width:0}
+.pass-display code{word-break:break-all}
+.gen-cert-row{flex-wrap:wrap}
+.ep-grid-half{display:grid;grid-template-columns:repeat(2,1fr);gap:.5rem}

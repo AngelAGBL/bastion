@@ -10,11 +10,11 @@ export async function connectDB() {
   await db.collection("users").createIndex({ username: 1 }, { unique: true });
   await db.collection("certificates").createIndex({ fingerprint: 1 }, { unique: true });
   await db.collection("certificates").createIndex({ tunnelUserId: 1 });
+  await db.collection("certificates").createIndex({ endpointId: 1 });
   await db.collection("tunnel_users").createIndex({ name: 1 }, { unique: true });
   await db.collection("endpoints").createIndex({ targetId: 1 }, { unique: true });
   await db.collection("access_windows").createIndex({ tunnelUserId: 1, endpointId: 1 }, { unique: true });
   await db.collection("access_windows").createIndex({ tunnelUserId: 1 });
-  // Drop old index if exists
   try { await db.collection("access_windows").dropIndex("certId_1_endpointId_1"); } catch {}
   await db.collection("audit_logs").createIndex({ ts: -1 });
   await db.collection("audit_logs").createIndex({ fingerprint: 1, ts: -1 });

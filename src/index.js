@@ -1,6 +1,6 @@
 import "dotenv/config";
 import express from "ultimate-express";
-import { connectDB } from "./db.js";
+import { connectDB, getDB } from "./db.js";
 import { startWSServer } from "./ws-server.js";
 import { registerAuthRoutes } from "./routes/auth.routes.js";
 import { registerUsersRoutes } from "./routes/users.routes.js";
@@ -30,6 +30,17 @@ async function main() {
   await connectDB();
   app.listen(PORT_HTTP, () => console.log(`[http] :${PORT_HTTP}`));
   startWSServer(PORT_WS);
+
+  // Purge expired certificates every 60s
+  async function purgeExpired() {
+    try {
+      const db = getDB();
+      const r = await db.collection("certificates").deleteMany({ expiresAt: { $lte: new Date() } });
+      if (r.deletedCount) console.log(`[cleanup] purged ${r.deletedCount} expired cert(s)`);
+    } catch {}
+  }
+  purgeExpired();
+  setInterval(purgeExpired, 60_000);
 }
 
 main().catch((err) => {

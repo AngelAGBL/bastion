@@ -1,17 +1,10 @@
 import { ObjectId } from "mongodb";
 import { getDB } from "../db.js";
 import { pageAuth, authMiddleware } from "../auth.js";
-import { getCACert, signCSR } from "../ca.js";
+import { generateClientCert, generatePowershellScript, generateShellScript } from "../ca.js";
 import { render } from "../render.js";
 
 export function registerUsersRoutes(app) {
-  // Download CA
-  app.get("/api/ca.pem", (_req, res) => {
-    res.setHeader("Content-Type", "application/x-pem-file");
-    res.setHeader("Content-Disposition", "attachment; filename=bastion-ca.pem");
-    res.send(getCACert());
-  });
-
   // SSR page
   app.get("/dashboard/users", pageAuth, async (req, res) => {
     const db = getDB();
@@ -60,69 +53,115 @@ export function registerUsersRoutes(app) {
     const db = getDB();
     const certs = await db.collection("certificates")
       .find({ tunnelUserId: req.params.id })
-      .project({ clientCert: 0 })
+      .project({ clientCert: 0, keyPem: 0 })
       .toArray();
-    res.json(certs);
+    // Enrich with endpoint info
+    const epIds = certs.map(c => c.endpointId).filter(Boolean);
+    const endpoints = epIds.length
+      ? await db.collection("endpoints").find({ _id: { $in: epIds.map(id => new ObjectId(id)) } }).toArray()
+      : [];
+    const epMap = Object.fromEntries(endpoints.map(ep => [String(ep._id), ep]));
+    const enriched = certs.map(c => ({
+      ...c,
+      endpoint: c.endpointId ? epMap[String(c.endpointId)] || null : null,
+    }));
+    res.json(enriched);
   });
 
+  // Generate new cert for a user + endpoint
   app.post("/api/tunnel-users/:id/certs", authMiddleware, async (req, res) => {
     try {
-      const { name, csr } = req.body;
-      if (!name || !csr) return res.status(400).json({ error: "name and csr required" });
-      const { cert, fingerprint } = signCSR(csr.trim());
+      const { name, endpointId, durationDays } = req.body;
+      if (!name || !endpointId) return res.status(400).json({ error: "name and endpointId required" });
+
+      const days = Number(durationDays) || 365;
       const db = getDB();
-      const r = await db.collection("certificates").insertOne({
+      const endpoint = await db.collection("endpoints").findOne({ _id: new ObjectId(endpointId) });
+      if (!endpoint) return res.status(404).json({ error: "endpoint not found" });
+
+      const result = generateClientCert(name, days);
+
+      const doc = {
         tunnelUserId: req.params.id,
-        name, fingerprint, clientCert: cert,
+        endpointId: new ObjectId(endpointId),
+        name,
+        fingerprint: result.fingerprint,
+        clientCert: result.certPem,
+        keyPem: result.keyPem,
         createdAt: new Date(),
+        expiresAt: new Date(Date.now() + days * 24 * 60 * 60 * 1000),
+      };
+
+      const r = await db.collection("certificates").insertOne(doc);
+
+      // Auto-create access window if not exists
+      await db.collection("access_windows").findOneAndUpdate(
+        { tunnelUserId: req.params.id, endpointId: new ObjectId(endpointId) },
+        { $setOnInsert: { tunnelUserId: req.params.id, endpointId: new ObjectId(endpointId), from: new Date(), until: new Date(), active: false, createdAt: new Date() } },
+        { upsert: true }
+      );
+
+      res.json({
+        _id: r.insertedId, name, fingerprint: result.fingerprint,
+        endpoint,
       });
-      res.json({ _id: r.insertedId, name, fingerprint, cert });
     } catch (e) {
       if (e.code === 11000) return res.status(409).json({ error: "duplicate" });
-      res.status(400).json({ error: "invalid CSR" });
+      console.error(e);
+      res.status(400).json({ error: "error generating cert" });
     }
   });
 
-  // Download individual cert PEM
-  app.get("/api/certs/:id/download", authMiddleware, async (req, res) => {
+  // Download PowerShell script
+  app.get("/api/certs/:id/download/ps1", authMiddleware, async (req, res) => {
     const db = getDB();
     const cert = await db.collection("certificates").findOne({ _id: new ObjectId(req.params.id) });
-    if (!cert || !cert.clientCert) return res.status(404).json({ error: "not found" });
-    res.setHeader("Content-Type", "application/x-pem-file");
-    res.setHeader("Content-Disposition", `attachment; filename=${cert.name.replace(/[^a-zA-Z0-9._-]/g, "_")}.crt.pem`);
-    res.send(cert.clientCert);
+    if (!cert || !cert.keyPem) return res.status(404).json({ error: "not found or key unavailable" });
+
+    const wsHost = process.env.WS_HOST || "localhost:3001";
+    const script = generatePowershellScript({ keyPem: cert.keyPem, certPem: cert.clientCert, wsHost });
+    const filename = `${cert.name.replace(/[^a-zA-Z0-9._-]/g, "_")}.ps1`;
+    res.setHeader("Content-Type", "application/octet-stream");
+    res.setHeader("Content-Disposition", `attachment; filename=${filename}`);
+    res.send(script);
   });
 
-  // Update cert (name and/or re-sign new CSR)
+  // Download Shell script
+  app.get("/api/certs/:id/download/sh", authMiddleware, async (req, res) => {
+    const db = getDB();
+    const cert = await db.collection("certificates").findOne({ _id: new ObjectId(req.params.id) });
+    if (!cert || !cert.keyPem) return res.status(404).json({ error: "not found or key unavailable" });
+
+    const wsHost = process.env.WS_HOST || "localhost:3001";
+    const script = generateShellScript({ keyPem: cert.keyPem, certPem: cert.clientCert, wsHost });
+    const filename = `${cert.name.replace(/[^a-zA-Z0-9._-]/g, "_")}.sh`;
+    res.setHeader("Content-Type", "application/octet-stream");
+    res.setHeader("Content-Disposition", `attachment; filename=${filename}`);
+    res.send(script);
+  });
+
+  // Update cert name
   app.put("/api/certs/:id", authMiddleware, async (req, res) => {
     try {
-      const { name, csr } = req.body;
+      const { name } = req.body;
       const db = getDB();
       const update = {};
       if (name) update.name = name;
-      if (csr) {
-        const result = signCSR(csr.trim());
-        update.clientCert = result.cert;
-        update.fingerprint = result.fingerprint;
-      }
       if (!Object.keys(update).length) return res.status(400).json({ error: "nothing to update" });
       const r = await db.collection("certificates").findOneAndUpdate(
         { _id: new ObjectId(req.params.id) },
         { $set: update },
-        { returnDocument: "after", projection: { clientCert: 0 } }
+        { returnDocument: "after", projection: { clientCert: 0, keyPem: 0 } }
       );
       if (!r) return res.status(404).json({ error: "not found" });
       res.json(r);
     } catch (e) {
-      if (e.code === 11000) return res.status(409).json({ error: "duplicate fingerprint" });
-      res.status(400).json({ error: "invalid CSR or data" });
+      res.status(400).json({ error: "error" });
     }
   });
 
   app.delete("/api/certs/:id", authMiddleware, async (req, res) => {
     const db = getDB();
-    const cert = await db.collection("certificates").findOne({ _id: new ObjectId(req.params.id) });
-    if (cert) await db.collection("access_windows").deleteMany({ certId: cert._id });
     await db.collection("certificates").deleteOne({ _id: new ObjectId(req.params.id) });
     res.json({ ok: true });
   });
@@ -142,11 +181,9 @@ export function registerUsersRoutes(app) {
 
       const db = getDB();
       const now = new Date();
-      // If durationMs provided, activate with timer. Otherwise create inactive.
       const active = !!durationMs;
       const until = durationMs ? new Date(now.getTime() + Number(durationMs)) : now;
 
-      // Upsert a single window per tunnelUserId+endpointId
       const r = await db.collection("access_windows").findOneAndUpdate(
         { tunnelUserId, endpointId: new ObjectId(endpointId) },
         {
@@ -161,7 +198,6 @@ export function registerUsersRoutes(app) {
     }
   });
 
-  // Deactivate all windows for a user+endpoint
   app.post("/api/access/deactivate", authMiddleware, async (req, res) => {
     const { tunnelUserId, endpointId } = req.body;
     if (!tunnelUserId || !endpointId) return res.status(400).json({ error: "missing" });
@@ -173,7 +209,6 @@ export function registerUsersRoutes(app) {
     res.json({ ok: true });
   });
 
-  // Revoke = delete ALL windows for a user+endpoint
   app.post("/api/access/revoke", authMiddleware, async (req, res) => {
     const { tunnelUserId, endpointId } = req.body;
     if (!tunnelUserId || !endpointId) return res.status(400).json({ error: "missing" });
