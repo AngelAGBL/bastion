@@ -16,21 +16,38 @@
     </div>
 
     <!-- Generar certificado -->
-    <div class="row mb gen-cert-row">
-      <input id="cert-name-<%= tu._id %>" placeholder="Nombre del certificado" style="max-width:200px">
-      <select id="cert-ep-<%= tu._id %>" style="width:auto">
-        <option value="">Endpoint...</option>
-        <% for (const ep of endpoints) { %>
-          <option value="<%= ep._id %>"><%= ep.name %> (<%= ep.host %>:<%= ep.port %>)</option>
-        <% } %>
-      </select>
-      <select id="cert-dur-<%= tu._id %>" style="width:auto">
-        <option value="1">1 día</option>
-        <option value="7">1 semana</option>
-        <option value="30">1 mes</option>
-        <option value="365" selected>1 año</option>
-      </select>
-      <button class="btn btn-primary btn-sm" onclick="generateCert('<%= tu._id %>')">Generar Auth</button>
+    <div class="gen-cert-form mb">
+      <div class="row gen-cert-row">
+        <div class="form-group" style="flex:1;min-width:140px;margin-bottom:0">
+          <label>Nombre</label>
+          <input id="cert-name-<%= tu._id %>" placeholder="laptop-dev">
+        </div>
+        <div class="form-group" style="flex:1;min-width:140px;margin-bottom:0">
+          <label>Endpoint</label>
+          <select id="cert-ep-<%= tu._id %>">
+            <option value="">Seleccionar...</option>
+            <% for (const ep of endpoints) { %>
+              <option value="<%= ep._id %>"><%= ep.name %></option>
+            <% } %>
+          </select>
+        </div>
+        <div class="form-group" style="width:100px;margin-bottom:0">
+          <label>Vigencia</label>
+          <select id="cert-dur-<%= tu._id %>">
+            <option value="1">1 día</option>
+            <option value="7">1 semana</option>
+            <option value="30">1 mes</option>
+            <option value="365" selected>1 año</option>
+          </select>
+        </div>
+        <div class="form-group" style="width:70px;margin-bottom:0">
+          <label>Usos</label>
+          <input id="cert-uses-<%= tu._id %>" type="number" min="0" value="3" title="0 = ilimitado">
+        </div>
+        <div class="form-group" style="margin-bottom:0;align-self:flex-end">
+          <button class="btn btn-primary btn-sm" onclick="generateCert('<%= tu._id %>')">Generar</button>
+        </div>
+      </div>
     </div>
 
     <!-- Endpoints con sus certificados -->

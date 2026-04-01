@@ -18,8 +18,9 @@
   </form>
 </div>
 
+<div class="endpoints-grid">
 <% for (const ep of endpoints) { %>
-<div class="card" id="ep-<%= ep._id %>">
+<div class="card" id="ep-<%= ep._id %>" style="margin-bottom:0">
   <div class="row mb">
     <strong class="grow" id="ep-name-<%= ep._id %>"><%= ep.name %></strong>
     <button class="btn btn-ghost btn-sm" onclick="openEditEp('<%= ep._id %>','<%= ep.name %>','<%= ep.host %>',<%= ep.port %>)">✎</button>
@@ -30,6 +31,7 @@
   <div class="mono" id="ep-addr-<%= ep._id %>"><%= ep.host %>:<%= ep.port %></div>
 </div>
 <% } %>
+</div>
 
 <!-- Modal editar endpoint -->
 <div id="modal-ep" class="modal-overlay hidden" onclick="if(event.target===this)closeEpModal()">

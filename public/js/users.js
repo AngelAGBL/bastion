@@ -53,15 +53,18 @@ async function generateCert(uid) {
   const nameInput = document.getElementById(`cert-name-${uid}`);
   const epSelect = document.getElementById(`cert-ep-${uid}`);
   const durSelect = document.getElementById(`cert-dur-${uid}`);
+  const usesInput = document.getElementById(`cert-uses-${uid}`);
   const name = nameInput.value.trim();
   const endpointId = epSelect.value;
   const durationDays = Number(durSelect.value);
+  const uses = Number(usesInput.value) || 0;
   if (!name) return nameInput.focus();
   if (!endpointId) return alert("Seleccione un endpoint");
   try {
-    await api(`/api/tunnel-users/${uid}/certs`, { method: "POST", body: { name, endpointId, durationDays } });
+    await api(`/api/tunnel-users/${uid}/certs`, { method: "POST", body: { name, endpointId, durationDays, uses } });
     nameInput.value = "";
     epSelect.value = "";
+    usesInput.value = "3";
     loadUserData(uid);
   } catch (e) { alert(e.message); }
 }
@@ -88,6 +91,28 @@ async function deleteCert(certId, uid) {
   if (!confirm("¿Eliminar certificado?")) return;
   await api(`/api/certs/${certId}`, { method: "DELETE" });
   loadUserData(uid);
+}
+
+async function downloadP12(certId) {
+  const password = prompt("Contraseña para proteger el archivo .p12:");
+  if (!password) return;
+  try {
+    const resp = await fetch(`/api/certs/${certId}/p12`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password }),
+    });
+    if (!resp.ok) { const e = await resp.json(); throw new Error(e.error); }
+    const blob = await resp.blob();
+    const cd = resp.headers.get("content-disposition") || "";
+    const match = cd.match(/filename=(.+)/);
+    const filename = match ? match[1] : "tunnel.p12";
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  } catch (e) { alert("Error: " + e.message); }
 }
 
 // --- Unified load: certs grouped by endpoint + access windows ---
@@ -165,25 +190,29 @@ async function loadUserData(uid) {
     }
 
     // Certs inside this endpoint
+    html += '<div class="cert-grid">';
     for (const c of epCerts) {
       const isExpired = c.expiresAt && new Date(c.expiresAt) < new Date();
       const certTl = !isExpired && c.expiresAt ? timeLeft(c.expiresAt) : null;
       const expStyle = isExpired ? 'color:var(--danger)' : 'color:var(--muted)';
       const expLabel = isExpired ? 'EXPIRADO' : (certTl || '—');
+      const usesLabel = c.uses > 0 ? `${c.uses} usos` : (c.uses === 0 ? '<span style="color:var(--danger)">sin usos</span>' : '∞');
 
       html += `<div class="card cert-card" style="padding:.5rem;background:var(--bg)">`;
-      html += `<div class="row"><strong class="grow" style="font-size:.85rem">${esc(c.name)}</strong>`;
-      html += `<span class="cert-ttl" data-expires="${c.expiresAt || ''}" style="font-size:.7rem;${expStyle};white-space:nowrap">${expLabel}</span>`;
+      html += `<div class="row mb"><strong class="grow" style="font-size:.85rem">${esc(c.name)}</strong>`;
+      html += `<span style="font-size:.7rem;color:var(--muted);white-space:nowrap">${usesLabel}</span>`;
+      html += `<span class="cert-ttl" data-expires="${c.expiresAt || ''}" style="font-size:.7rem;${expStyle};white-space:nowrap">${expLabel}</span></div>`;
+      html += `<div class="mono mb" style="font-size:.7rem">${c.fingerprint}</div>`;
+      html += `<div class="row" style="gap:.25rem">`;
+      html += `<button class="btn btn-ghost btn-sm" onclick="downloadP12('${c._id}')">⬇ .p12</button>`;
+      html += `<div class="grow"></div>`;
       html += `<button class="btn btn-ghost btn-sm" onclick="openEditCert('${c._id}','${esc(c.name)}','${uid}')">✎</button>`;
-      html += `<button class="btn btn-danger btn-sm" onclick="deleteCert('${c._id}','${uid}')">×</button></div>`;
-      html += `<div class="mono" style="font-size:.7rem">${c.fingerprint}</div>`;
-      html += `<div class="row mt" style="gap:.25rem">`;
-      html += `<a href="/api/certs/${c._id}/download/ps1" class="btn btn-ghost btn-sm" download title="PowerShell">⬇ .ps1</a>`;
-      html += `<a href="/api/certs/${c._id}/download/sh" class="btn btn-ghost btn-sm" download title="Shell (Linux/Mac)">⬇ .sh</a>`;
+      html += `<button class="btn btn-danger btn-sm" onclick="deleteCert('${c._id}','${uid}')">×</button>`;
       html += `</div></div>`;
     }
 
-    html += `</div>`;
+    html += '</div>'; // close cert-grid
+    html += `</div>`; // close endpoint card
   }
 
   html += '</div>';

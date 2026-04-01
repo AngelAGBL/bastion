@@ -86,3 +86,7 @@ label{display:block;font-size:.8rem;color:var(--muted);margin-bottom:.25rem}
 .pass-display code{word-break:break-all}
 .gen-cert-row{flex-wrap:wrap}
 .ep-grid-half{display:grid;grid-template-columns:repeat(2,1fr);gap:.5rem}
+.cert-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:.4rem}
+
+.endpoints-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:.5rem;max-width:100%}
+@media(max-width:900px){.endpoints-grid{grid-template-columns:repeat(2,1fr)}}

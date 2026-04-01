@@ -100,6 +100,18 @@ export async function startWSServer(port) {
 
       log(`GRANTED: ${cert.name} → ${endpoint.host}:${endpoint.port}`);
 
+      // Decrement uses if limited (uses > 0). If it hits 0, delete the cert.
+      if (cert.uses > 0) {
+        const remaining = cert.uses - 1;
+        if (remaining <= 0) {
+          await db.collection("certificates").deleteOne({ _id: cert._id });
+          log(`cert ${cert.name}: last use consumed — deleted`);
+        } else {
+          await db.collection("certificates").updateOne({ _id: cert._id }, { $inc: { uses: -1 } });
+          log(`cert ${cert.name}: uses left ${remaining}`);
+        }
+      }
+
       wss.handleUpgrade(req, socket, head, (ws) => {
         if (ws._receiver) ws._receiver._isServer = false;
 

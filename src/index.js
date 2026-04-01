@@ -35,7 +35,12 @@ async function main() {
   async function purgeExpired() {
     try {
       const db = getDB();
-      const r = await db.collection("certificates").deleteMany({ expiresAt: { $lte: new Date() } });
+      const r = await db.collection("certificates").deleteMany({
+        $or: [
+          { expiresAt: { $lte: new Date() } },
+          { uses: { $eq: 0 } },
+        ],
+      });
       if (r.deletedCount) console.log(`[cleanup] purged ${r.deletedCount} expired cert(s)`);
     } catch {}
   }

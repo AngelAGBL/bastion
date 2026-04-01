@@ -1,7 +1,7 @@
 import { ObjectId } from "mongodb";
 import { getDB } from "../db.js";
 import { pageAuth, authMiddleware } from "../auth.js";
-import { generateClientCert, generatePowershellScript, generateShellScript } from "../ca.js";
+import { generateClientCert, generateP12 } from "../ca.js";
 import { render } from "../render.js";
 
 export function registerUsersRoutes(app) {
@@ -71,10 +71,11 @@ export function registerUsersRoutes(app) {
   // Generate new cert for a user + endpoint
   app.post("/api/tunnel-users/:id/certs", authMiddleware, async (req, res) => {
     try {
-      const { name, endpointId, durationDays } = req.body;
+      const { name, endpointId, durationDays, uses } = req.body;
       if (!name || !endpointId) return res.status(400).json({ error: "name and endpointId required" });
 
       const days = Number(durationDays) || 365;
+      const maxUses = Number(uses) || 0; // 0 = unlimited
       const db = getDB();
       const endpoint = await db.collection("endpoints").findOne({ _id: new ObjectId(endpointId) });
       if (!endpoint) return res.status(404).json({ error: "endpoint not found" });
@@ -88,6 +89,7 @@ export function registerUsersRoutes(app) {
         fingerprint: result.fingerprint,
         clientCert: result.certPem,
         keyPem: result.keyPem,
+        uses: maxUses,
         createdAt: new Date(),
         expiresAt: new Date(Date.now() + days * 24 * 60 * 60 * 1000),
       };
@@ -112,32 +114,25 @@ export function registerUsersRoutes(app) {
     }
   });
 
-  // Download PowerShell script
-  app.get("/api/certs/:id/download/ps1", authMiddleware, async (req, res) => {
+  // Download .p12 bundle (cert + key + CA, password-protected)
+  app.post("/api/certs/:id/p12", authMiddleware, async (req, res) => {
+    const { password } = req.body;
+    if (!password) return res.status(400).json({ error: "password required" });
+
     const db = getDB();
     const cert = await db.collection("certificates").findOne({ _id: new ObjectId(req.params.id) });
-    if (!cert || !cert.keyPem) return res.status(404).json({ error: "not found or key unavailable" });
+    if (!cert || !cert.keyPem) return res.status(404).json({ error: "not found" });
 
-    const wsHost = process.env.WS_HOST || "localhost:3001";
-    const script = generatePowershellScript({ keyPem: cert.keyPem, certPem: cert.clientCert, wsHost });
-    const filename = `${cert.name.replace(/[^a-zA-Z0-9._-]/g, "_")}.ps1`;
-    res.setHeader("Content-Type", "application/octet-stream");
-    res.setHeader("Content-Disposition", `attachment; filename=${filename}`);
-    res.send(script);
-  });
-
-  // Download Shell script
-  app.get("/api/certs/:id/download/sh", authMiddleware, async (req, res) => {
-    const db = getDB();
-    const cert = await db.collection("certificates").findOne({ _id: new ObjectId(req.params.id) });
-    if (!cert || !cert.keyPem) return res.status(404).json({ error: "not found or key unavailable" });
-
-    const wsHost = process.env.WS_HOST || "localhost:3001";
-    const script = generateShellScript({ keyPem: cert.keyPem, certPem: cert.clientCert, wsHost });
-    const filename = `${cert.name.replace(/[^a-zA-Z0-9._-]/g, "_")}.sh`;
-    res.setHeader("Content-Type", "application/octet-stream");
-    res.setHeader("Content-Disposition", `attachment; filename=${filename}`);
-    res.send(script);
+    try {
+      const p12 = generateP12(cert.clientCert, cert.keyPem, password);
+      const filename = `${cert.name.replace(/[^a-zA-Z0-9._-]/g, "_")}.p12`;
+      res.setHeader("Content-Type", "application/x-pkcs12");
+      res.setHeader("Content-Disposition", `attachment; filename=${filename}`);
+      res.send(p12);
+    } catch (e) {
+      console.error("p12 error:", e.message);
+      res.status(500).json({ error: "p12 generation failed" });
+    }
   });
 
   // Update cert name
