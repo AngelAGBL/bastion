@@ -1,7 +1,7 @@
 import { ObjectId } from "mongodb";
-import { getDB } from "../db.js";
-import { pageAuth, authMiddleware } from "../auth.js";
-import { render } from "../render.js";
+import { getDB } from "../services/db.js";
+import { pageAuth, authMiddleware } from "../services/auth.js";
+import { render } from "../utils/render.js";
 
 const LIMIT = 100;
 
@@ -10,35 +10,18 @@ export function registerAuditRoutes(app) {
     const db = getDB();
     const query = req.query || {};
     const filter = buildFilter(query);
-
-    const logs = await db.collection("audit_logs")
-      .find(filter)
-      .project({ rawHex: 0 })
-      .sort({ ts: -1 })
-      .limit(LIMIT)
-      .toArray();
-
+    const logs = await db.collection("audit_logs").find(filter).project({ rawHex: 0 }).sort({ ts: -1 }).limit(LIMIT).toArray();
     const [certs, endpoints, tunnelUsers] = await Promise.all([
       db.collection("certificates").find().project({ clientCert: 0, keyPem: 0 }).toArray(),
       db.collection("endpoints").find().toArray(),
       db.collection("tunnel_users").find().sort({ name: 1 }).toArray(),
     ]);
-
-    // Enrich logs with userName if missing (for old logs)
     const tuMap = Object.fromEntries(tunnelUsers.map(tu => [String(tu._id), tu.name]));
-    for (const l of logs) {
-      if (!l.userName && l.userId) l.userName = tuMap[String(l.userId)] || null;
-    }
-
+    for (const l of logs) { if (!l.userName && l.userId) l.userName = tuMap[String(l.userId)] || null; }
     if (query.fmt === "json") return res.json(logs);
-
-    render(res, "dashboard/audit", {
-      user: req.user, tab: "audit", logs, certs, endpoints, tunnelUsers,
-      query, limit: LIMIT, clientScript: "/js/audit.js",
-    });
+    render(res, "dashboard/audit", { user: req.user, tab: "audit", logs, certs, endpoints, tunnelUsers, query, limit: LIMIT, clientScript: "/js/audit.js" });
   });
 
-  // Get full raw content of a single log entry
   app.get("/api/audit/:id/raw", authMiddleware, async (req, res) => {
     const db = getDB();
     const log = await db.collection("audit_logs").findOne({ _id: new ObjectId(req.params.id) });

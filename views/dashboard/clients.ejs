@@ -1,0 +1,74 @@
+<script type="application/json" id="endpoints-data"><%- JSON.stringify(endpoints) %></script>
+
+<div class="row mb">
+  <input id="search-users" placeholder="Buscar usuario..." style="max-width:240px" oninput="filterUsers(this.value)">
+  <div class="grow"></div>
+  <input id="new-user-name" placeholder="Nombre nuevo usuario" style="max-width:200px">
+  <button class="btn btn-primary btn-sm" onclick="createUser()">+ Agregar</button>
+</div>
+
+<div id="user-list">
+<% for (const tu of tunnelUsers) { %>
+  <div class="card user-card" data-uid="<%= tu._id %>" data-name="<%= tu.name.toLowerCase() %>">
+    <div class="row mb">
+      <strong class="grow"><%= tu.name %></strong>
+      <button class="btn btn-danger btn-sm" onclick="deleteUser('<%= tu._id %>')">Eliminar</button>
+    </div>
+
+    <!-- Generar certificado -->
+    <div class="gen-cert-form mb">
+      <div class="row gen-cert-row">
+        <div class="form-group" style="flex:1;min-width:140px;margin-bottom:0">
+          <label>Nombre</label>
+          <input id="cert-name-<%= tu._id %>" placeholder="laptop-dev">
+        </div>
+        <div class="form-group" style="flex:1;min-width:140px;margin-bottom:0">
+          <label>Endpoint</label>
+          <select id="cert-ep-<%= tu._id %>">
+            <option value="">Seleccionar...</option>
+            <% for (const ep of endpoints) { %>
+              <option value="<%= ep._id %>"><%= ep.name %></option>
+            <% } %>
+          </select>
+        </div>
+        <div class="form-group" style="width:100px;margin-bottom:0">
+          <label>Vigencia</label>
+          <select id="cert-dur-<%= tu._id %>">
+            <option value="60">2 meses</option>
+            <option value="120" selected>4 meses</option>
+            <option value="180">6 meses</option>
+            <option value="240">8 meses</option>
+          </select>
+        </div>
+        <div class="form-group" style="width:70px;margin-bottom:0">
+          <label>Usos</label>
+          <input id="cert-uses-<%= tu._id %>" type="number" min="0" value="5" title="0 = ilimitado">
+        </div>
+        <div class="form-group" style="margin-bottom:0;align-self:flex-end">
+          <button class="btn btn-primary btn-sm" onclick="generateCert('<%= tu._id %>')">Generar</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Endpoints con sus certificados -->
+    <div id="ep-certs-<%= tu._id %>"></div>
+  </div>
+<% } %>
+</div>
+
+<!-- Modal editar certificado -->
+<div id="modal-edit" class="modal-overlay hidden">
+  <div class="modal-box">
+    <div class="row mb">
+      <strong class="grow">Editar certificado</strong>
+      <button class="btn btn-ghost btn-sm" onclick="closeModal('modal-edit')">×</button>
+    </div>
+    <input type="hidden" id="modal-edit-cert-id">
+    <input type="hidden" id="modal-edit-uid">
+    <div class="form-group">
+      <label>Nombre</label>
+      <input id="modal-edit-name">
+    </div>
+    <button class="btn btn-primary btn-sm" onclick="saveEditCert()">Guardar</button>
+  </div>
+</div>

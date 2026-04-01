@@ -10,11 +10,12 @@
 <% if (typeof user !== 'undefined' && user) { %>
 <nav class="navbar">
   <div class="container row">
-    <a href="/dashboard/users" class="logo">Bastion</a>
+    <a href="/dashboard/clients" class="logo">Bastion</a>
     <div class="nav-links">
-      <a href="/dashboard/users" class="nav-link<%= typeof tab !== 'undefined' && tab === 'users' ? ' active' : '' %>">Usuarios</a>
+      <a href="/dashboard/clients" class="nav-link<%= typeof tab !== 'undefined' && tab === 'clients' ? ' active' : '' %>">Clientes</a>
       <a href="/dashboard/endpoints" class="nav-link<%= typeof tab !== 'undefined' && tab === 'endpoints' ? ' active' : '' %>">Puntos de Acceso</a>
       <a href="/dashboard/audit" class="nav-link<%= typeof tab !== 'undefined' && tab === 'audit' ? ' active' : '' %>">Auditoría</a>
+      <a href="/dashboard/admins" class="nav-link<%= typeof tab !== 'undefined' && tab === 'admins' ? ' active' : '' %>">Administradores</a>
     </div>
     <form method="POST" action="/auth/logout" class="nav-logout">
       <span class="nav-user"><%= user.username %></span>

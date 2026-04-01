@@ -1,0 +1,28 @@
+<div class="row mb">
+  <strong class="grow">Administradores del panel</strong>
+</div>
+
+<div class="card mb">
+  <div class="row">
+    <input id="new-admin-user" placeholder="Usuario" style="max-width:200px">
+    <input id="new-admin-pass" type="password" placeholder="Contraseña" style="max-width:200px">
+    <button class="btn btn-primary btn-sm" onclick="createAdmin()">+ Agregar</button>
+  </div>
+</div>
+
+<div id="admin-list">
+<% for (const a of admins) { %>
+  <div class="card" data-aid="<%= a._id %>" style="padding:.75rem">
+    <div class="row">
+      <strong class="grow"><%= a.username %></strong>
+      <% if (String(a._id) !== String(user._id)) { %>
+        <button class="btn btn-ghost btn-sm" onclick="changePassword('<%= a._id %>', '<%= a.username %>')">Cambiar contraseña</button>
+        <button class="btn btn-danger btn-sm" onclick="deleteAdmin('<%= a._id %>', '<%= a.username %>')">Eliminar</button>
+      <% } else { %>
+        <span style="font-size:.8rem;color:var(--muted)">(tú)</span>
+        <button class="btn btn-ghost btn-sm" onclick="changePassword('<%= a._id %>', '<%= a.username %>')">Cambiar contraseña</button>
+      <% } %>
+    </div>
+  </div>
+<% } %>
+</div>
