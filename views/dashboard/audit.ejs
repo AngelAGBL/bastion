@@ -23,6 +23,12 @@
       <option value="upload" <%= query.direction === 'upload' ? 'selected' : '' %>>↑ Cliente → Destino</option>
       <option value="download" <%= query.direction === 'download' ? 'selected' : '' %>>↓ Destino → Cliente</option>
     </select>
+    <select name="offset">
+      <option value="0" <%= query.offset === '0' ? 'selected' : '' %>>Sin offset</option>
+      <% for (let i = 1; i <= 7; i++) { %>
+        <option value="<%= i %>" <%= query.offset === String(i) ? 'selected' : '' %>>Offset <%= i %> bits</option>
+      <% } %>
+    </select>
     <button type="submit" class="btn btn-primary btn-sm">Filtrar</button>
     <a href="/dashboard/audit" class="btn btn-ghost btn-sm">Limpiar</a>
   </form>
@@ -70,15 +76,18 @@
 </div>
 <% } %>
 
-<div class="mt" style="text-align:right">
-  <button class="btn btn-ghost btn-sm" id="btn-live">● En vivo</button>
-</div>
+<div class="mt" style="text-align:right;font-size:.75rem;color:var(--muted)">● Tiempo real vía SSE</div>
 
 <!-- Modal contenido completo -->
 <div id="modal-raw" class="modal-overlay hidden">
   <div class="modal-box" style="max-width:700px">
     <div class="row mb">
       <strong class="grow">Contenido</strong>
+      <select id="raw-offset" style="width:auto;font-size:.8rem" onchange="reloadRaw()">
+        <option value="0">Sin offset</option>
+        <option value="1">1 bit</option><option value="2">2 bits</option><option value="3">3 bits</option>
+        <option value="4">4 bits</option><option value="5">5 bits</option><option value="6">6 bits</option><option value="7">7 bits</option>
+      </select>
       <button class="btn btn-ghost btn-sm" id="btn-toggle-hex">Hex</button>
       <button class="btn btn-ghost btn-sm" onclick="document.getElementById('modal-raw').classList.add('hidden')">×</button>
     </div>

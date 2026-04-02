@@ -2,6 +2,7 @@ package main
 
 import (
 	"net"
+	"strings"
 	"sync"
 )
 
@@ -10,14 +11,18 @@ type tunnel struct {
 	Server   string `json:"server"`
 	Port     string `json:"port"`
 	P12Path  string `json:"p12_path"`
+	BindCIDR string `json:"bind_cidr"` // e.g. "127.0.0.1/32" or "192.168.0.0/24"
 	Password string `json:"-"`
 
-	status        string
-	remainingUses int // -1 = unlimited, 0+ = remaining
-	mu            sync.Mutex
-	stopped       bool
-	done          chan struct{}
-	listener      net.Listener
+	status       string
+	limitInKiB   int // 0 = unlimited
+	limitOutKiB  int
+	usedInBytes  int64
+	usedOutBytes int64
+	mu           sync.Mutex
+	stopped      bool
+	done         chan struct{}
+	listener     net.Listener
 }
 
 func (t *tunnel) stop() {
@@ -46,17 +51,34 @@ func (t *tunnel) setStatus(s string) {
 	t.mu.Unlock()
 }
 
-func (t *tunnel) setUses(n int) {
+func (t *tunnel) bindAddr() string {
+	cidr := t.BindCIDR
+	if cidr == "" {
+		cidr = "127.0.0.1/32"
+	}
+	// Extract IP from CIDR for listen address
+	ip := cidr
+	if idx := strings.Index(cidr, "/"); idx >= 0 {
+		ip = cidr[:idx]
+	}
+	return ip + ":" + t.Port
+}
+
+func (t *tunnel) setBandwidth(limitIn, limitOut int, usedIn, usedOut int64) {
 	t.mu.Lock()
-	t.remainingUses = n
+	t.limitInKiB = limitIn
+	t.limitOutKiB = limitOut
+	t.usedInBytes = usedIn
+	t.usedOutBytes = usedOut
 	t.mu.Unlock()
 	tunnelsMu.Lock()
 	saveConfig(allTunnels)
 	tunnelsMu.Unlock()
 }
 
-func (t *tunnel) getUses() int {
+func (t *tunnel) addBytes(upload, download int64) {
 	t.mu.Lock()
-	defer t.mu.Unlock()
-	return t.remainingUses
+	t.usedInBytes += upload
+	t.usedOutBytes += download
+	t.mu.Unlock()
 }

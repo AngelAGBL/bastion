@@ -17,8 +17,8 @@ export function registerClientsRoutes(app) {
     const handler = (data) => {
       res.write(`data: ${JSON.stringify(data)}\n\n`);
     };
-    bus.on("cert:uses", handler);
-    req.on("close", () => bus.off("cert:uses", handler));
+    bus.on("cert:bandwidth", handler);
+    req.on("close", () => { bus.off("cert:bandwidth", handler); });
   });
 
   app.get("/dashboard/clients", pageAuth, async (req, res) => {
@@ -80,10 +80,11 @@ export function registerClientsRoutes(app) {
 
   app.post("/api/tunnel-users/:id/certs", authMiddleware, async (req, res) => {
     try {
-      const { name, endpointId, durationDays, uses } = req.body;
+      const { name, endpointId, durationDays, limitInKiB, limitOutKiB } = req.body;
       if (!name || !endpointId) return res.status(400).json({ error: "name and endpointId required" });
       const days = Number(durationDays) || 365;
-      const maxUses = Number(uses) || 0;
+      const inKiB = Number(limitInKiB) || 0;
+      const outKiB = Number(limitOutKiB) || 0;
       const db = getDB();
       const endpoint = await db.collection("endpoints").findOne({ _id: new ObjectId(endpointId) });
       if (!endpoint) return res.status(404).json({ error: "endpoint not found" });
@@ -91,7 +92,8 @@ export function registerClientsRoutes(app) {
       const r = await db.collection("certificates").insertOne({
         tunnelUserId: req.params.id, endpointId: new ObjectId(endpointId),
         name, fingerprint: result.fingerprint, clientCert: result.certPem, keyPem: result.keyPem,
-        uses: maxUses, createdAt: new Date(),
+        limitInKiB: inKiB, limitOutKiB: outKiB, usedInBytes: 0, usedOutBytes: 0,
+        createdAt: new Date(),
         expiresAt: new Date(Date.now() + days * 24 * 60 * 60 * 1000),
       });
       await db.collection("access_windows").findOneAndUpdate(

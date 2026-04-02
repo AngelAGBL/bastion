@@ -43,11 +43,22 @@ func statusIcon(status string) fyne.Resource {
 	}
 }
 
-func usesText(uses int) string {
-	if uses < 0 {
-		return "∞"
+func bwStatusText(t *tunnel) string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.bwTextUnlocked()
+}
+
+func (t *tunnel) bwTextUnlocked() string {
+	inStr := "∞"
+	if t.limitInKiB > 0 {
+		inStr = fmt.Sprintf("%.1f/%dKiB", float64(t.usedInBytes)/1024, t.limitInKiB)
 	}
-	return fmt.Sprintf("%d usos", uses)
+	outStr := "∞"
+	if t.limitOutKiB > 0 {
+		outStr = fmt.Sprintf("%.1f/%dKiB", float64(t.usedOutBytes)/1024, t.limitOutKiB)
+	}
+	return fmt.Sprintf("↑%s ↓%s", inStr, outStr)
 }
 
 func main() {
@@ -86,15 +97,23 @@ func main() {
 			addrL := widget.NewLabel("addr")
 			addrL.TextStyle = fyne.TextStyle{Monospace: true}
 			statusL := widget.NewLabel("status")
-			usesL := widget.NewLabel("uses")
-			usesL.TextStyle = fyne.TextStyle{Monospace: true}
+			statusL.Importance = widget.LowImportance
+			bwL := widget.NewLabel("bw")
+			bwL.TextStyle = fyne.TextStyle{Monospace: true}
+			bwL.Importance = widget.LowImportance
 			actionBtn := widget.NewButton("Detener", nil)
+			editBtn := widget.NewButtonWithIcon("", theme.DocumentCreateIcon(), nil)
 			removeBtn := widget.NewButtonWithIcon("", theme.DeleteIcon(), nil)
 			removeBtn.Importance = widget.DangerImportance
-			left := container.NewHBox(icon, nameL)
-			mid := container.NewHBox(addrL, statusL, usesL)
-			right := container.NewHBox(actionBtn, removeBtn)
-			return container.NewBorder(nil, nil, left, right, mid)
+			// Row 1: name | addr → server
+			topLeft := container.NewHBox(icon, nameL)
+			topRight := addrL
+			topRow := container.NewBorder(nil, nil, topLeft, nil, topRight)
+			// Row 2: status | bandwidth | buttons
+			botLeft := container.NewHBox(statusL)
+			botRight := container.NewHBox(actionBtn, editBtn, removeBtn)
+			botRow := container.NewBorder(nil, nil, botLeft, botRight, bwL)
+			return container.NewVBox(topRow, botRow)
 		},
 		func(id widget.ListItemID, obj fyne.CanvasObject) {
 			tunnelsMu.Lock()
@@ -105,27 +124,34 @@ func main() {
 			t := allTunnels[id]
 			tunnelsMu.Unlock()
 
-			border := obj.(*fyne.Container)
-			leftBox := border.Objects[1].(*fyne.Container)
-			rightBox := border.Objects[2].(*fyne.Container)
-			midBox := border.Objects[0].(*fyne.Container)
+			vbox := obj.(*fyne.Container)
+			topRow := vbox.Objects[0].(*fyne.Container)
+			botRow := vbox.Objects[1].(*fyne.Container)
 
-			icon := leftBox.Objects[0].(*widget.Icon)
-			nameL := leftBox.Objects[1].(*widget.Label)
-			addrL := midBox.Objects[0].(*widget.Label)
-			statusL := midBox.Objects[1].(*widget.Label)
-			usesL := midBox.Objects[2].(*widget.Label)
-			actionBtn := rightBox.Objects[0].(*widget.Button)
-			removeBtn := rightBox.Objects[1].(*widget.Button)
+			topLeftBox := topRow.Objects[1].(*fyne.Container)
+			icon := topLeftBox.Objects[0].(*widget.Icon)
+			nameL := topLeftBox.Objects[1].(*widget.Label)
+			addrL := topRow.Objects[0].(*widget.Label)
+
+			botLeftBox := botRow.Objects[1].(*fyne.Container)
+			statusL := botLeftBox.Objects[0].(*widget.Label)
+			bwL := botRow.Objects[0].(*widget.Label)
+			botRightBox := botRow.Objects[2].(*fyne.Container)
+			actionBtn := botRightBox.Objects[0].(*widget.Button)
+			editBtn := botRightBox.Objects[1].(*widget.Button)
+			removeBtn := botRightBox.Objects[2].(*widget.Button)
 
 			t.mu.Lock()
 			status := t.status
 			active := !t.stopped
-			uses := t.remainingUses
 			t.mu.Unlock()
 
 			nameL.SetText(t.Name)
-			addrL.SetText(fmt.Sprintf("127.0.0.1:%s → %s", t.Port, t.Server))
+			bindIP := t.BindCIDR
+			if bindIP == "" {
+				bindIP = "127.0.0.1/32"
+			}
+			addrL.SetText(fmt.Sprintf("%s:%s → %s", strings.Split(bindIP, "/")[0], t.Port, t.Server))
 			icon.SetResource(statusIcon(status))
 			statusL.SetText(status)
 			if active {
@@ -133,12 +159,7 @@ func main() {
 			} else {
 				statusL.Importance = widget.LowImportance
 			}
-			if active || uses >= 0 {
-				usesL.SetText("[" + usesText(uses) + "]")
-				usesL.Show()
-			} else {
-				usesL.Hide()
-			}
+			bwL.SetText(bwStatusText(t))
 			if active {
 				actionBtn.SetText("Detener")
 				actionBtn.Importance = widget.DangerImportance
@@ -149,6 +170,7 @@ func main() {
 				actionBtn.OnTapped = func() { showReconnectDialog(w, t) }
 			}
 			capturedID := id
+			editBtn.OnTapped = func() { showEditDialog(w, t) }
 			removeBtn.OnTapped = func() {
 				t.stop()
 				tunnelsMu.Lock()
@@ -172,7 +194,10 @@ func main() {
 	for _, st := range cfg.Tunnels {
 		allTunnels = append(allTunnels, &tunnel{
 			Name: st.Name, Server: st.Server, Port: st.Port, P12Path: st.P12Path,
-			status: "detenido", remainingUses: st.RemainingUses, stopped: true, done: make(chan struct{}),
+			BindCIDR: st.BindCIDR,
+			status: "detenido", limitInKiB: st.LimitInKiB, limitOutKiB: st.LimitOutKiB,
+			usedInBytes: st.UsedInBytes, usedOutBytes: st.UsedOutBytes,
+			stopped: true, done: make(chan struct{}),
 		})
 	}
 	refreshList()

@@ -53,18 +53,21 @@ async function generateCert(uid) {
   const nameInput = document.getElementById(`cert-name-${uid}`);
   const epSelect = document.getElementById(`cert-ep-${uid}`);
   const durSelect = document.getElementById(`cert-dur-${uid}`);
-  const usesInput = document.getElementById(`cert-uses-${uid}`);
+  const limitInInput = document.getElementById(`cert-limitin-${uid}`);
+  const limitOutInput = document.getElementById(`cert-limitout-${uid}`);
   const name = nameInput.value.trim();
   const endpointId = epSelect.value;
   const durationDays = Number(durSelect.value);
-  const uses = Number(usesInput.value) || 0;
+  const limitInKiB = Number(limitInInput.value) || 0;
+  const limitOutKiB = Number(limitOutInput.value) || 0;
   if (!name) return nameInput.focus();
   if (!endpointId) return alert("Seleccione un endpoint");
   try {
-    await api(`/api/tunnel-users/${uid}/certs`, { method: "POST", body: { name, endpointId, durationDays, uses } });
+    await api(`/api/tunnel-users/${uid}/certs`, { method: "POST", body: { name, endpointId, durationDays, limitInKiB, limitOutKiB } });
     nameInput.value = "";
     epSelect.value = "";
-    usesInput.value = "5";
+    limitInInput.value = "10";
+    limitOutInput.value = "50";
     loadUserData(uid);
   } catch (e) { alert(e.message); }
 }
@@ -196,14 +199,24 @@ async function loadUserData(uid) {
       const certTl = !isExpired && c.expiresAt ? timeLeft(c.expiresAt) : null;
       const expStyle = isExpired ? 'color:var(--danger)' : 'color:var(--muted)';
       const expLabel = isExpired ? 'EXPIRADO' : (certTl || '—');
-      const usesLabel = c.uses > 0 ? `${c.uses} usos` : (c.uses === 0 ? '<span style="color:var(--danger)">sin usos</span>' : '∞');
+      const inLimit = c.limitInKiB || 0;
+      const outLimit = c.limitOutKiB || 0;
+      const usedIn = c.usedInBytes || 0;
+      const usedOut = c.usedOutBytes || 0;
+      const inLabel = inLimit > 0 ? `↑${(usedIn/1024).toFixed(1)}/${inLimit}KiB` : '↑∞';
+      const outLabel = outLimit > 0 ? `↓${(usedOut/1024).toFixed(1)}/${outLimit}KiB` : '↓∞';
+      const inExceeded = inLimit > 0 && usedIn >= inLimit * 1024;
+      const outExceeded = outLimit > 0 && usedOut >= outLimit * 1024;
+      const bwStyle = (inExceeded || outExceeded) ? 'color:var(--danger)' : 'color:var(--muted)';
 
       html += `<div class="card cert-card" data-cert-id="${c._id}" style="padding:.5rem;background:var(--bg)">`;
-      html += `<div class="row mb"><strong class="grow" style="font-size:.85rem">${esc(c.name)}</strong>`;
-      html += `<span class="cert-uses" style="font-size:.7rem;color:var(--muted);white-space:nowrap">${usesLabel}</span>`;
-      html += `<span class="cert-ttl" data-expires="${c.expiresAt || ''}" style="font-size:.7rem;${expStyle};white-space:nowrap">${expLabel}</span></div>`;
-      html += `<div class="mono mb" style="font-size:.7rem">${c.fingerprint}</div>`;
-      html += `<div class="row" style="gap:.25rem">`;
+      html += `<div class="row"><strong style="font-size:.85rem;padding-bottom:.5rem;">${esc(c.name)}</strong></div>`;
+      html += `<div class="row" style="font-size:.7rem;gap:.5rem">`;
+      html += `<span class="cert-bw" style="${bwStyle};white-space:nowrap">${inLabel} ${outLabel}</span>`;
+      html += `<div class="grow"></div>`;
+      html += `<span class="cert-ttl" data-expires="${c.expiresAt || ''}" style="${expStyle};white-space:nowrap">${expLabel}</span>`;
+      html += `</div>`;
+      html += `<div class="row mt" style="gap:.25rem">`;
       html += `<button class="btn btn-ghost btn-sm" onclick="downloadP12('${c._id}')">⬇ .p12</button>`;
       html += `<div class="grow"></div>`;
       html += `<button class="btn btn-ghost btn-sm" onclick="openEditCert('${c._id}','${esc(c.name)}','${uid}')">✎</button>`;
@@ -266,19 +279,14 @@ document.addEventListener("DOMContentLoaded", () => {
     loadUserData(card.dataset.uid);
   });
 
-  // SSE: real-time cert use updates
+  // SSE: real-time bandwidth updates (debounced to avoid flooding)
   const evtSource = new EventSource("/api/clients/events");
-  evtSource.onmessage = (e) => {
-    try {
-      const { certId, uses } = JSON.parse(e.data);
-      // Update the uses badge in-place without full reload
-      const el = document.querySelector(`[data-cert-id="${certId}"] .cert-uses`);
-      if (el) {
-        el.textContent = uses > 0 ? `${uses} usos` : (uses === 0 ? 'sin usos' : '∞');
-        if (uses === 0) el.style.color = 'var(--danger)';
-      }
-      // Also do a full reload for the affected user to catch deletions
+  let _sseTimer = null;
+  evtSource.onmessage = () => {
+    if (_sseTimer) return;
+    _sseTimer = setTimeout(() => {
+      _sseTimer = null;
       for (const uid of _activeUids) loadUserData(uid);
-    } catch {}
+    }, 2000);
   };
 });

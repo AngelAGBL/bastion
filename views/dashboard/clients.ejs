@@ -40,9 +40,13 @@
             <option value="240">8 meses</option>
           </select>
         </div>
-        <div class="form-group" style="width:70px;margin-bottom:0">
-          <label>Usos</label>
-          <input id="cert-uses-<%= tu._id %>" type="number" min="0" value="5" title="0 = ilimitado">
+        <div class="form-group" style="width:80px;margin-bottom:0">
+          <label>↑ KiB</label>
+          <input id="cert-limitin-<%= tu._id %>" type="number" min="0" value="10" title="Límite subida en KiB (0 = ilimitado)">
+        </div>
+        <div class="form-group" style="width:80px;margin-bottom:0">
+          <label>↓ KiB</label>
+          <input id="cert-limitout-<%= tu._id %>" type="number" min="0" value="50" title="Límite bajada en KiB (0 = ilimitado)">
         </div>
         <div class="form-group" style="margin-bottom:0;align-self:flex-end">
           <button class="btn btn-primary btn-sm" onclick="generateCert('<%= tu._id %>')">Generar</button>

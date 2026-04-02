@@ -48,7 +48,7 @@ export async function startWSServer(port) {
         }
         const fingerprint = crypto.createHash("sha256").update(peerCert.raw).digest("hex");
         const db = getDB();
-        const cert = await db.collection("certificates").findOne({ fingerprint }, { projection: { _id: 1, uses: 1, tunnelUserId: 1, endpointId: 1 } });
+        const cert = await db.collection("certificates").findOne({ fingerprint }, { projection: { _id: 1, limitInKiB: 1, limitOutKiB: 1, usedInBytes: 1, usedOutBytes: 1, tunnelUserId: 1, endpointId: 1 } });
         if (!cert) {
           res.writeHead(403, { "Content-Type": "text/plain" });
           return res.end("cert not registered\n");
@@ -58,10 +58,20 @@ export async function startWSServer(port) {
           tunnelUserId: cert.tunnelUserId, endpointId: cert.endpointId,
           active: true, from: { $lte: now }, until: { $gte: now },
         }) : null;
-        const uses = cert.uses > 0 ? cert.uses : -1;
+        const limitIn = cert.limitInKiB || 0;
+        const limitOut = cert.limitOutKiB || 0;
+        const usedIn = cert.usedInBytes || 0;
+        const usedOut = cert.usedOutBytes || 0;
+        const remainIn = limitIn > 0 ? Math.max(0, limitIn * 1024 - usedIn) : -1;
+        const remainOut = limitOut > 0 ? Math.max(0, limitOut * 1024 - usedOut) : -1;
         res.writeHead(200, {
           "Content-Type": "text/plain",
-          "X-Remaining-Uses": String(uses),
+          "X-Limit-In-KiB": String(limitIn),
+          "X-Limit-Out-KiB": String(limitOut),
+          "X-Used-In-Bytes": String(usedIn),
+          "X-Used-Out-Bytes": String(usedOut),
+          "X-Remain-In-Bytes": String(remainIn),
+          "X-Remain-Out-Bytes": String(remainOut),
           "X-Active": window ? "true" : "false",
           "Connection": "close",
         });
@@ -112,17 +122,14 @@ export async function startWSServer(port) {
       });
       if (!window) return reject(socket, "403 Forbidden", "no active access window");
 
-      if (cert.uses > 0) {
-        const remaining = cert.uses - 1;
-        if (remaining <= 0) {
-          await db.collection("certificates").deleteOne({ _id: cert._id });
-          log(`cert ${cert.name}: last use — deleted`);
-          bus.emit("cert:uses", { certId: String(cert._id), uses: 0 });
-        } else {
-          await db.collection("certificates").updateOne({ _id: cert._id }, { $inc: { uses: -1 } });
-          log(`cert ${cert.name}: uses left ${remaining}`);
-          bus.emit("cert:uses", { certId: String(cert._id), uses: remaining });
-        }
+      // Check bandwidth limits — reject but don't delete
+      const limitInBytes = (cert.limitInKiB || 0) * 1024;
+      const limitOutBytes = (cert.limitOutKiB || 0) * 1024;
+      if (limitInBytes > 0 && (cert.usedInBytes || 0) >= limitInBytes) {
+        return reject(socket, "403 Forbidden", "upload limit exceeded");
+      }
+      if (limitOutBytes > 0 && (cert.usedOutBytes || 0) >= limitOutBytes) {
+        return reject(socket, "403 Forbidden", "download limit exceeded");
       }
 
       log(`GRANTED: ${cert.name} → ${endpoint.host}:${endpoint.port}`);
@@ -133,8 +140,19 @@ export async function startWSServer(port) {
         let tcpReady = false;
         const buf = [];
         tcp.on("connect", () => { log(`tcp connected ${endpoint.host}:${endpoint.port}`); tcpReady = true; for (const b of buf) tcp.write(b); buf.length = 0; });
-        tcp.on("data", (data) => { if (ws.readyState === 1) ws.send(data); logTraffic(cert, endpoint, "download", data); });
-        ws.on("message", (data) => { const chunk = Buffer.isBuffer(data) ? data : Buffer.from(data); if (tcpReady) tcp.write(chunk); else buf.push(chunk); logTraffic(cert, endpoint, "upload", chunk); });
+        tcp.on("data", (data) => {
+          if (ws.readyState === 1) ws.send(data);
+          db.collection("certificates").updateOne({ _id: cert._id }, { $inc: { usedOutBytes: data.length } }).catch(() => {});
+          bus.emit("cert:bandwidth", { certId: String(cert._id), usedInBytes: null, usedOutBytes: data.length, inc: true });
+          logTraffic(cert, endpoint, "download", data);
+        });
+        ws.on("message", (data) => {
+          const chunk = Buffer.isBuffer(data) ? data : Buffer.from(data);
+          if (tcpReady) tcp.write(chunk); else buf.push(chunk);
+          db.collection("certificates").updateOne({ _id: cert._id }, { $inc: { usedInBytes: chunk.length } }).catch(() => {});
+          bus.emit("cert:bandwidth", { certId: String(cert._id), usedInBytes: chunk.length, usedOutBytes: null, inc: true });
+          logTraffic(cert, endpoint, "upload", chunk);
+        });
         tcp.on("error", (e) => { log(`tcp err: ${e.message}`); ws.close(); });
         tcp.on("close", () => ws.close());
         ws.on("close", (code) => { log(`ws closed code=${code}`); tcp.destroy(); });
@@ -155,12 +173,15 @@ function makePreview(buf) {
 
 function logTraffic(cert, endpoint, direction, data) {
   const db = getDB();
-  db.collection("audit_logs").insertOne({
+  const doc = {
     userId: cert.tunnelUserId, userName: cert._userName || null,
     certId: cert._id, certName: cert.name, fingerprint: cert.fingerprint,
     endpointId: endpoint._id, endpointName: endpoint.name,
     targetHost: endpoint.host, targetPort: endpoint.port,
     direction, bytes: data.length, preview: makePreview(data),
     rawHex: data.toString("hex"), ts: new Date(),
+  };
+  db.collection("audit_logs").insertOne(doc).then((r) => {
+    bus.emit("audit:log", { ...doc, _id: r.insertedId, rawHex: undefined });
   }).catch(() => {});
 }

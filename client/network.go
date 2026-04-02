@@ -18,10 +18,13 @@ import (
 )
 
 type verifyResult struct {
-	ok     bool
-	uses   int
-	active bool
-	err    string
+	ok           bool
+	limitInKiB   int
+	limitOutKiB  int
+	usedInBytes  int64
+	usedOutBytes int64
+	active       bool
+	err          string
 }
 
 func callVerify(server string, tlsConfig *tls.Config) verifyResult {
@@ -36,12 +39,14 @@ func callVerify(server string, tlsConfig *tls.Config) verifyResult {
 	if resp.StatusCode != 200 {
 		return verifyResult{err: "certificado no registrado"}
 	}
-	uses := -1
-	if v := resp.Header.Get("X-Remaining-Uses"); v != "" {
-		fmt.Sscanf(v, "%d", &uses)
-	}
+	var limitIn, limitOut int
+	var usedIn, usedOut int64
+	fmt.Sscanf(resp.Header.Get("X-Limit-In-KiB"), "%d", &limitIn)
+	fmt.Sscanf(resp.Header.Get("X-Limit-Out-KiB"), "%d", &limitOut)
+	fmt.Sscanf(resp.Header.Get("X-Used-In-Bytes"), "%d", &usedIn)
+	fmt.Sscanf(resp.Header.Get("X-Used-Out-Bytes"), "%d", &usedOut)
 	active := resp.Header.Get("X-Active") == "true"
-	return verifyResult{ok: true, uses: uses, active: active}
+	return verifyResult{ok: true, limitInKiB: limitIn, limitOutKiB: limitOut, usedInBytes: usedIn, usedOutBytes: usedOut, active: active}
 }
 
 func dialWS(server string, tlsConfig *tls.Config) (net.Conn, *bufio.Reader, *http.Response, error) {
@@ -104,13 +109,13 @@ func connectTunnel(w fyne.Window, t *tunnel) {
 		failTunnel(t, "error: "+vr.err)
 		return
 	}
-	t.setUses(vr.uses)
+	t.setBandwidth(vr.limitInKiB, vr.limitOutKiB, vr.usedInBytes, vr.usedOutBytes)
 	if !vr.active {
 		failTunnel(t, "error: endpoint no activo")
 		return
 	}
 
-	ln, err := net.Listen("tcp", "127.0.0.1:"+t.Port)
+	ln, err := net.Listen("tcp", t.bindAddr())
 	if err != nil {
 		failTunnel(t, "error: puerto ocupado")
 		return
@@ -142,22 +147,6 @@ func connectTunnel(w fyne.Window, t *tunnel) {
 func handleConn(local net.Conn, t *tunnel, tlsConfig *tls.Config) {
 	defer local.Close()
 
-	// Pre-check: verify reads uses BEFORE the upgrade decrements,
-	// so subtract 1 to show what it will be after this connection.
-	vr := callVerify(t.Server, tlsConfig)
-	if vr.ok {
-		display := vr.uses
-		if display > 0 {
-			display--
-		}
-		t.setUses(display)
-		refreshList()
-		if !vr.active {
-			failTunnel(t, "error: endpoint desactivado")
-			return
-		}
-	}
-
 	remote, br, resp, err := dialWS(t.Server, tlsConfig)
 	if err != nil {
 		if resp != nil {
@@ -173,8 +162,25 @@ func handleConn(local net.Conn, t *tunnel, tlsConfig *tls.Config) {
 	}
 	defer remote.Close()
 
+	// Ticker to refresh UI during long-lived connections
+	refreshDone := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(1 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-refreshDone:
+				return
+			case <-ticker.C:
+				refreshList()
+			}
+		}
+	}()
+
 	var wg sync.WaitGroup
 	wg.Add(2)
+
+	// local → remote (upload)
 	go func() {
 		defer wg.Done()
 		buf := make([]byte, 32*1024)
@@ -182,12 +188,15 @@ func handleConn(local net.Conn, t *tunnel, tlsConfig *tls.Config) {
 			n, err := local.Read(buf)
 			if n > 0 {
 				writeWSFrame(remote, buf[:n])
+				t.addBytes(int64(n), 0)
 			}
 			if err != nil {
 				break
 			}
 		}
 	}()
+
+	// remote → local (download)
 	go func() {
 		defer wg.Done()
 		for {
@@ -197,17 +206,20 @@ func handleConn(local net.Conn, t *tunnel, tlsConfig *tls.Config) {
 			}
 			if len(data) > 0 {
 				local.Write(data)
+				t.addBytes(0, int64(len(data)))
 			}
 		}
 	}()
-	wg.Wait()
 
-	// Post-check: read actual remaining uses after the upgrade decremented
+	wg.Wait()
+	close(refreshDone)
+
+	// Corroborate with server after connection closes
 	post := callVerify(t.Server, tlsConfig)
 	if post.ok {
-		t.setUses(post.uses)
-		refreshList()
+		t.setBandwidth(post.limitInKiB, post.limitOutKiB, post.usedInBytes, post.usedOutBytes)
 	}
+	refreshList()
 }
 
 // WebSocket framing
