@@ -40,7 +40,9 @@ export function getCACertPath() { ensureCA(); return CA_CERT; }
 export function generateClientCert(commonName, days = 365) {
   ensureCA();
   const { privateKey } = generateKeyPair();
-  const cn = commonName.replace(/[^a-zA-Z0-9._\- ]/g, "_");
+  // CN = WSHOST env var (domain:port), allows client to auto-discover server
+  const wsHost = process.env.WSHOST || "localhost:3001";
+  const cn = wsHost.replace(/[^a-zA-Z0-9._:\- ]/g, "_");
   const serial = crypto.randomBytes(8).toString("hex");
   const tmp = fs.mkdtempSync(path.join(CA_DIR, "tmp-"));
   try {
@@ -61,7 +63,7 @@ export function generateServerCert() {
   try {
     const kf = path.join(tmp, "k.pem"), cf = path.join(tmp, "c.csr"), ef = path.join(tmp, "e.cnf"), of = path.join(tmp, "o.pem");
     fs.writeFileSync(kf, privateKey, { mode: 0o600 });
-    fs.writeFileSync(ef, "subjectAltName=DNS:localhost,DNS:bastion-tunnel,DNS:*,IP:127.0.0.1,IP:0.0.0.0");
+    fs.writeFileSync(ef, "subjectAltName=DNS:localhost,DNS:*,IP:127.0.0.1,IP:0.0.0.0");
     execSync(`openssl req -new -key "${kf}" -out "${cf}" -subj "/CN=bastion-tunnel"`, { stdio: "pipe" });
     execSync(`openssl x509 -req -in "${cf}" -CA "${CA_CERT}" -CAkey "${CA_KEY}" -set_serial 0x${serial} -out "${of}" -days 365 -extfile "${ef}"`, { stdio: "pipe" });
     return { key: privateKey, cert: fs.readFileSync(of, "utf-8") };

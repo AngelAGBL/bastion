@@ -17,10 +17,11 @@ services:
       - "3000:3000"
       - "3001:3001"
     environment:
-      PORT_HTTP: 3000
-      PORT_WS: 3001
+      #PORT_HTTP: 3000
+      #PORT_WS: 3001
       MONGO_URI: mongodb://mongo:27017/bastion
       JWT_SECRET: change-me-to-a-random-secret-at-least-32-chars!!
+      WSHOST: localhost:3001
     volumes:
       - ./src:/app/src:z
       - ./views:/app/views:z

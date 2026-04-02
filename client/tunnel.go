@@ -10,8 +10,9 @@ type tunnel struct {
 	Name     string `json:"name"`
 	Server   string `json:"server"`
 	Port     string `json:"port"`
+	Protocol string `json:"protocol"` // "tcp" or "udp"
 	P12Path  string `json:"p12_path"`
-	BindCIDR string `json:"bind_cidr"` // e.g. "127.0.0.1/32" or "192.168.0.0/24"
+	BindCIDR string `json:"bind_cidr"`
 	Password string `json:"-"`
 
 	status       string
@@ -49,6 +50,13 @@ func (t *tunnel) setStatus(s string) {
 	t.mu.Lock()
 	t.status = s
 	t.mu.Unlock()
+}
+
+func (t *tunnel) proto() string {
+	if t.Protocol == "udp" {
+		return "UDP"
+	}
+	return "TCP"
 }
 
 func (t *tunnel) bindAddr() string {

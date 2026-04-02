@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import net from "node:net";
+import dgram from "node:dgram";
 import https from "node:https";
 import { WebSocketServer } from "ws";
 import { ObjectId } from "mongodb";
@@ -8,6 +9,7 @@ import { getDB } from "./services/db.js";
 import bus from "./services/events.js";
 
 const PREVIEW_MAX = 256;
+const activeFingerprints = new Set(); // track connected certs
 
 function log(...args) {
   const msg = args.map(a => typeof a === "object" ? JSON.stringify(a) : String(a)).join(" ");
@@ -132,31 +134,85 @@ export async function startWSServer(port) {
         return reject(socket, "403 Forbidden", "download limit exceeded");
       }
 
-      log(`GRANTED: ${cert.name} → ${endpoint.host}:${endpoint.port}`);
+      // Reject if this cert already has an active connection
+      if (activeFingerprints.has(fingerprint)) {
+        return reject(socket, "403 Forbidden", "cert already connected");
+      }
+
+      log(`GRANTED: ${cert.name} → ${endpoint.protocol || "tcp"}://${endpoint.host}:${endpoint.port}`);
+      activeFingerprints.add(fingerprint);
 
       wss.handleUpgrade(req, socket, head, (ws) => {
-        const tcp = net.createConnection({ host: endpoint.host, port: endpoint.port });
-        tcp.setNoDelay(true);
-        let tcpReady = false;
-        const buf = [];
-        tcp.on("connect", () => { log(`tcp connected ${endpoint.host}:${endpoint.port}`); tcpReady = true; for (const b of buf) tcp.write(b); buf.length = 0; });
-        tcp.on("data", (data) => {
-          if (ws.readyState === 1) ws.send(data);
-          db.collection("certificates").updateOne({ _id: cert._id }, { $inc: { usedOutBytes: data.length } }).catch(() => {});
-          bus.emit("cert:bandwidth", { certId: String(cert._id), usedInBytes: null, usedOutBytes: data.length, inc: true });
-          logTraffic(cert, endpoint, "download", data);
-        });
-        ws.on("message", (data) => {
-          const chunk = Buffer.isBuffer(data) ? data : Buffer.from(data);
-          if (tcpReady) tcp.write(chunk); else buf.push(chunk);
+        const proto = endpoint.protocol || "tcp";
+        const limitIn = (cert.limitInKiB || 0) * 1024;
+        const limitOut = (cert.limitOutKiB || 0) * 1024;
+        let totalIn = cert.usedInBytes || 0;
+        let totalOut = cert.usedOutBytes || 0;
+
+        function checkLimits() {
+          if (limitIn > 0 && totalIn >= limitIn) {
+            log(`cert ${cert.name}: upload limit hit (${totalIn}/${limitIn})`);
+            ws.close();
+            return true;
+          }
+          if (limitOut > 0 && totalOut >= limitOut) {
+            log(`cert ${cert.name}: download limit hit (${totalOut}/${limitOut})`);
+            ws.close();
+            return true;
+          }
+          return false;
+        }
+
+        function trackUpload(chunk) {
+          totalIn += chunk.length;
           db.collection("certificates").updateOne({ _id: cert._id }, { $inc: { usedInBytes: chunk.length } }).catch(() => {});
-          bus.emit("cert:bandwidth", { certId: String(cert._id), usedInBytes: chunk.length, usedOutBytes: null, inc: true });
+          bus.emit("cert:bandwidth", { certId: String(cert._id), usedInBytes: chunk.length, inc: true });
           logTraffic(cert, endpoint, "upload", chunk);
-        });
-        tcp.on("error", (e) => { log(`tcp err: ${e.message}`); ws.close(); });
-        tcp.on("close", () => ws.close());
-        ws.on("close", (code) => { log(`ws closed code=${code}`); tcp.destroy(); });
-        ws.on("error", (e) => { log(`ws err: ${e.message}`); tcp.destroy(); });
+          checkLimits();
+        }
+
+        function trackDownload(data) {
+          totalOut += data.length;
+          db.collection("certificates").updateOne({ _id: cert._id }, { $inc: { usedOutBytes: data.length } }).catch(() => {});
+          bus.emit("cert:bandwidth", { certId: String(cert._id), usedOutBytes: data.length, inc: true });
+          logTraffic(cert, endpoint, "download", data);
+          checkLimits();
+        }
+
+        if (proto === "udp") {
+          const udp = dgram.createSocket("udp4");
+          udp.on("message", (msg) => {
+            if (ws.readyState === 1) ws.send(msg);
+            trackDownload(msg);
+          });
+          udp.on("error", (e) => { log(`udp err: ${e.message}`); ws.close(); });
+          ws.on("message", (data) => {
+            const chunk = Buffer.isBuffer(data) ? data : Buffer.from(data);
+            udp.send(chunk, endpoint.port, endpoint.host);
+            trackUpload(chunk);
+          });
+          ws.on("close", () => { activeFingerprints.delete(fingerprint); try { udp.close(); } catch {} });
+          ws.on("error", () => { activeFingerprints.delete(fingerprint); try { udp.close(); } catch {} });
+        } else {
+          const tcp = net.createConnection({ host: endpoint.host, port: endpoint.port });
+          tcp.setNoDelay(true);
+          let tcpReady = false;
+          const buf = [];
+          tcp.on("connect", () => { log(`tcp connected ${endpoint.host}:${endpoint.port}`); tcpReady = true; for (const b of buf) tcp.write(b); buf.length = 0; });
+          tcp.on("data", (data) => {
+            if (ws.readyState === 1) ws.send(data);
+            trackDownload(data);
+          });
+          ws.on("message", (data) => {
+            const chunk = Buffer.isBuffer(data) ? data : Buffer.from(data);
+            if (tcpReady) tcp.write(chunk); else buf.push(chunk);
+            trackUpload(chunk);
+          });
+          tcp.on("error", (e) => { log(`tcp err: ${e.message}`); ws.close(); });
+          tcp.on("close", () => ws.close());
+          ws.on("close", (code) => { log(`ws closed code=${code}`); activeFingerprints.delete(fingerprint); tcp.destroy(); });
+          ws.on("error", (e) => { log(`ws err: ${e.message}`); activeFingerprints.delete(fingerprint); tcp.destroy(); });
+        }
       });
     } catch (e) {
       log("error:", e.message);

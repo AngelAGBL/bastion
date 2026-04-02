@@ -75,6 +75,19 @@ func dialWS(server string, tlsConfig *tls.Config) (net.Conn, *bufio.Reader, *htt
 	return remote, br, resp, nil
 }
 
+// extractCN reads a p12 file and returns the CN from the client certificate (contains host:port).
+func extractCN(p12Path, password string) (string, error) {
+	data, err := os.ReadFile(p12Path)
+	if err != nil {
+		return "", err
+	}
+	_, cert, _, err := gopkcs12.DecodeChain(data, password)
+	if err != nil {
+		return "", err
+	}
+	return cert.Subject.CommonName, nil
+}
+
 func failTunnel(t *tunnel, msg string) {
 	t.mu.Lock()
 	t.status = msg
@@ -126,6 +139,66 @@ func connectTunnel(w fyne.Window, t *tunnel) {
 	t.mu.Unlock()
 	refreshList()
 
+	if t.Protocol == "udp" {
+		// UDP mode: listen for datagrams, each one opens a WS and sends
+		udpAddr, _ := net.ResolveUDPAddr("udp", t.bindAddr())
+		udpConn, err := net.ListenUDP("udp", udpAddr)
+		if err != nil {
+			failTunnel(t, "error: puerto udp ocupado")
+			ln.Close()
+			return
+		}
+		// Close the TCP listener we don't need
+		ln.Close()
+		t.mu.Lock()
+		t.listener = nil
+		t.mu.Unlock()
+
+		go func() {
+			<-t.done
+			udpConn.Close()
+		}()
+
+		buf := make([]byte, 65535)
+		clients := make(map[string]*udpSession)
+		var mu sync.Mutex
+		for {
+			n, raddr, err := udpConn.ReadFromUDP(buf)
+			if err != nil {
+				if !t.isActive() {
+					return
+				}
+				continue
+			}
+			key := raddr.String()
+			mu.Lock()
+			sess, ok := clients[key]
+			if !ok {
+				remote, br, resp, err := dialWS(t.Server, tlsConfig)
+				if err != nil {
+					mu.Unlock()
+					if resp != nil {
+						failTunnel(t, "error: "+resp.Header.Get("X-Error"))
+					}
+					continue
+				}
+				sess = &udpSession{remote: remote, br: br, udpConn: udpConn, raddr: raddr, t: t}
+				clients[key] = sess
+				go sess.readLoop(func() {
+					mu.Lock()
+					delete(clients, key)
+					mu.Unlock()
+				})
+			}
+			mu.Unlock()
+			data := make([]byte, n)
+			copy(data, buf[:n])
+			writeWSFrame(sess.remote, data)
+			t.addBytes(int64(n), 0)
+		}
+	}
+
+	// TCP mode
 	for {
 		select {
 		case <-t.done:
@@ -286,9 +359,27 @@ func readWSFrame(r *bufio.Reader) ([]byte, error) {
 	return data, nil
 }
 
-func getEnvOr(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
+type udpSession struct {
+	remote  net.Conn
+	br      *bufio.Reader
+	udpConn *net.UDPConn
+	raddr   *net.UDPAddr
+	t       *tunnel
+}
+
+func (s *udpSession) readLoop(onClose func()) {
+	defer func() {
+		s.remote.Close()
+		onClose()
+	}()
+	for {
+		data, err := readWSFrame(s.br)
+		if err != nil {
+			break
+		}
+		if len(data) > 0 {
+			s.udpConn.WriteToUDP(data, s.raddr)
+			s.t.addBytes(0, int64(len(data)))
+		}
 	}
-	return def
 }

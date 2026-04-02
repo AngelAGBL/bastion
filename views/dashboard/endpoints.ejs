@@ -13,6 +13,13 @@
         <label>Puerto</label>
         <input name="port" type="number" placeholder="5432" required>
       </div>
+      <div style="width:90px" class="form-group">
+        <label>Protocolo</label>
+        <select name="protocol">
+          <option value="tcp" selected>TCP</option>
+          <option value="udp">UDP</option>
+        </select>
+      </div>
     </div>
     <button type="submit" class="btn btn-primary">Crear endpoint</button>
   </form>
@@ -23,7 +30,8 @@
 <div class="card" id="ep-<%= ep._id %>" style="margin-bottom:0">
   <div class="row mb">
     <strong class="grow" id="ep-name-<%= ep._id %>"><%= ep.name %></strong>
-    <button class="btn btn-ghost btn-sm" onclick="openEditEp('<%= ep._id %>','<%= ep.name %>','<%= ep.host %>',<%= ep.port %>)">✎</button>
+    <span class="badge" id="ep-proto-<%= ep._id %>"><%= (ep.protocol || 'tcp').toUpperCase() %></span>
+    <button class="btn btn-ghost btn-sm" onclick="openEditEp('<%= ep._id %>','<%= ep.name %>','<%= ep.host %>',<%= ep.port %>,'<%= ep.protocol || 'tcp' %>')">✎</button>
     <form method="POST" action="/dashboard/endpoints/<%= ep._id %>/delete" style="margin:0">
       <button type="submit" class="btn btn-danger btn-sm" onclick="return confirm('¿Eliminar endpoint?')">Eliminar</button>
     </form>
@@ -54,17 +62,25 @@
         <label>Puerto</label>
         <input id="modal-ep-port" type="number">
       </div>
+      <div style="width:90px" class="form-group">
+        <label>Protocolo</label>
+        <select id="modal-ep-proto">
+          <option value="tcp">TCP</option>
+          <option value="udp">UDP</option>
+        </select>
+      </div>
     </div>
     <button class="btn btn-primary btn-sm" onclick="saveEp()">Guardar</button>
   </div>
 </div>
 
 <script>
-function openEditEp(id, name, host, port) {
+function openEditEp(id, name, host, port, protocol) {
   document.getElementById("modal-ep-id").value = id;
   document.getElementById("modal-ep-name").value = name;
   document.getElementById("modal-ep-host").value = host;
   document.getElementById("modal-ep-port").value = port;
+  document.getElementById("modal-ep-proto").value = protocol || "tcp";
   document.getElementById("modal-ep").classList.remove("hidden");
 }
 function closeEpModal() {
@@ -75,19 +91,19 @@ async function saveEp() {
   const name = document.getElementById("modal-ep-name").value.trim();
   const host = document.getElementById("modal-ep-host").value.trim();
   const port = document.getElementById("modal-ep-port").value.trim();
+  const protocol = document.getElementById("modal-ep-proto").value;
   try {
     const res = await fetch("/api/endpoints/" + id, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, host, port: Number(port) }),
+      body: JSON.stringify({ name, host, port: Number(port), protocol }),
     });
     if (!res.ok) throw new Error();
-    // Update UI in place
     document.getElementById("ep-name-" + id).textContent = name;
     document.getElementById("ep-addr-" + id).textContent = host + ":" + port;
-    // Update edit button params
+    document.getElementById("ep-proto-" + id).textContent = protocol.toUpperCase();
     const btn = document.querySelector(`#ep-${id} .btn-ghost`);
-    btn.setAttribute("onclick", `openEditEp('${id}','${name}','${host}',${port})`);
+    btn.setAttribute("onclick", `openEditEp('${id}','${name}','${host}',${port},'${protocol}')`);
     closeEpModal();
   } catch { alert("Error al guardar"); }
 }

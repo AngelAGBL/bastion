@@ -43,22 +43,26 @@ func statusIcon(status string) fyne.Resource {
 	}
 }
 
-func bwStatusText(t *tunnel) string {
+func bwStatusText(t *tunnel) (string, bool, bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.bwTextUnlocked()
 }
 
-func (t *tunnel) bwTextUnlocked() string {
+func (t *tunnel) bwTextUnlocked() (string, bool, bool) {
 	inStr := "∞"
+	inOver := false
 	if t.limitInKiB > 0 {
 		inStr = fmt.Sprintf("%.1f/%dKiB", float64(t.usedInBytes)/1024, t.limitInKiB)
+		inOver = t.usedInBytes >= int64(t.limitInKiB)*1024
 	}
 	outStr := "∞"
+	outOver := false
 	if t.limitOutKiB > 0 {
 		outStr = fmt.Sprintf("%.1f/%dKiB", float64(t.usedOutBytes)/1024, t.limitOutKiB)
+		outOver = t.usedOutBytes >= int64(t.limitOutKiB)*1024
 	}
-	return fmt.Sprintf("↑%s ↓%s", inStr, outStr)
+	return fmt.Sprintf("↑%s ↓%s", inStr, outStr), inOver, outOver
 }
 
 func main() {
@@ -98,9 +102,12 @@ func main() {
 			addrL.TextStyle = fyne.TextStyle{Monospace: true}
 			statusL := widget.NewLabel("status")
 			statusL.Importance = widget.LowImportance
-			bwL := widget.NewLabel("bw")
-			bwL.TextStyle = fyne.TextStyle{Monospace: true}
-			bwL.Importance = widget.LowImportance
+			bwUpL := widget.NewLabel("bw-up")
+			bwUpL.TextStyle = fyne.TextStyle{Monospace: true}
+			bwUpL.Importance = widget.LowImportance
+			bwDownL := widget.NewLabel("bw-down")
+			bwDownL.TextStyle = fyne.TextStyle{Monospace: true}
+			bwDownL.Importance = widget.LowImportance
 			actionBtn := widget.NewButton("Detener", nil)
 			editBtn := widget.NewButtonWithIcon("", theme.DocumentCreateIcon(), nil)
 			removeBtn := widget.NewButtonWithIcon("", theme.DeleteIcon(), nil)
@@ -112,7 +119,7 @@ func main() {
 			// Row 2: status | bandwidth | buttons
 			botLeft := container.NewHBox(statusL)
 			botRight := container.NewHBox(actionBtn, editBtn, removeBtn)
-			botRow := container.NewBorder(nil, nil, botLeft, botRight, bwL)
+			botRow := container.NewBorder(nil, nil, botLeft, botRight, container.NewHBox(bwUpL, bwDownL))
 			return container.NewVBox(topRow, botRow)
 		},
 		func(id widget.ListItemID, obj fyne.CanvasObject) {
@@ -135,7 +142,9 @@ func main() {
 
 			botLeftBox := botRow.Objects[1].(*fyne.Container)
 			statusL := botLeftBox.Objects[0].(*widget.Label)
-			bwL := botRow.Objects[0].(*widget.Label)
+			bwBox := botRow.Objects[0].(*fyne.Container)
+			bwUpL := bwBox.Objects[0].(*widget.Label)
+			bwDownL := bwBox.Objects[1].(*widget.Label)
 			botRightBox := botRow.Objects[2].(*fyne.Container)
 			actionBtn := botRightBox.Objects[0].(*widget.Button)
 			editBtn := botRightBox.Objects[1].(*widget.Button)
@@ -151,7 +160,7 @@ func main() {
 			if bindIP == "" {
 				bindIP = "127.0.0.1/32"
 			}
-			addrL.SetText(fmt.Sprintf("%s:%s → %s", strings.Split(bindIP, "/")[0], t.Port, t.Server))
+			addrL.SetText(fmt.Sprintf("%s %s:%s → %s", t.proto(), strings.Split(bindIP, "/")[0], t.Port, t.Server))
 			icon.SetResource(statusIcon(status))
 			statusL.SetText(status)
 			if active {
@@ -159,7 +168,24 @@ func main() {
 			} else {
 				statusL.Importance = widget.LowImportance
 			}
-			bwL.SetText(bwStatusText(t))
+			bwText, inOver, outOver := bwStatusText(t)
+			parts := strings.SplitN(bwText, " ", 2)
+			bwUpL.SetText(parts[0])
+			if inOver {
+				bwUpL.Importance = widget.DangerImportance
+			} else {
+				bwUpL.Importance = widget.LowImportance
+			}
+			bwUpL.Refresh()
+			if len(parts) > 1 {
+				bwDownL.SetText(parts[1])
+			}
+			if outOver {
+				bwDownL.Importance = widget.DangerImportance
+			} else {
+				bwDownL.Importance = widget.LowImportance
+			}
+			bwDownL.Refresh()
 			if active {
 				actionBtn.SetText("Detener")
 				actionBtn.Importance = widget.DangerImportance
@@ -193,8 +219,8 @@ func main() {
 	cfg := loadConfig()
 	for _, st := range cfg.Tunnels {
 		allTunnels = append(allTunnels, &tunnel{
-			Name: st.Name, Server: st.Server, Port: st.Port, P12Path: st.P12Path,
-			BindCIDR: st.BindCIDR,
+			Name: st.Name, Server: st.Server, Port: st.Port, Protocol: st.Protocol,
+			P12Path: st.P12Path, BindCIDR: st.BindCIDR,
 			status: "detenido", limitInKiB: st.LimitInKiB, limitOutKiB: st.LimitOutKiB,
 			usedInBytes: st.UsedInBytes, usedOutBytes: st.UsedOutBytes,
 			stopped: true, done: make(chan struct{}),

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 
 	"fyne.io/fyne/v2"
@@ -9,13 +10,6 @@ import (
 	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/widget"
 )
-
-func defaultServer() string {
-	if lastServer != "" {
-		return lastServer
-	}
-	return getEnvOr("BASTION_HOST", "localhost:3001")
-}
 
 type enterEntry struct {
 	widget.Entry
@@ -38,14 +32,12 @@ func (e *enterEntry) TypedKey(ev *fyne.KeyEvent) {
 	e.Entry.TypedKey(ev)
 }
 
-// formRow creates a horizontal row: fixed-width label + entry filling the rest.
 func formRow(label string, entry fyne.CanvasObject) *fyne.Container {
 	l := widget.NewLabel(label)
 	l.Alignment = fyne.TextAlignTrailing
 	return container.NewBorder(nil, nil, container.NewGridWrap(fyne.NewSize(100, 0), l), nil, entry)
 }
 
-// wideForm wraps a form VBox with a minimum width so inputs aren't cramped.
 type wideForm struct {
 	widget.BaseWidget
 	content *fyne.Container
@@ -57,19 +49,11 @@ func newWideForm(minWidth float32, items ...fyne.CanvasObject) *wideForm {
 	w.ExtendBaseWidget(w)
 	return w
 }
+func (w *wideForm) CreateRenderer() fyne.WidgetRenderer { return &wideFormRenderer{form: w} }
 
-func (w *wideForm) CreateRenderer() fyne.WidgetRenderer {
-	return &wideFormRenderer{form: w}
-}
+type wideFormRenderer struct{ form *wideForm }
 
-type wideFormRenderer struct {
-	form *wideForm
-}
-
-func (r *wideFormRenderer) Layout(size fyne.Size) {
-	r.form.content.Resize(size)
-}
-
+func (r *wideFormRenderer) Layout(size fyne.Size) { r.form.content.Resize(size) }
 func (r *wideFormRenderer) MinSize() fyne.Size {
 	ms := r.form.content.MinSize()
 	if ms.Width < r.form.minW {
@@ -77,7 +61,6 @@ func (r *wideFormRenderer) MinSize() fyne.Size {
 	}
 	return ms
 }
-
 func (r *wideFormRenderer) Refresh()                     { r.form.content.Refresh() }
 func (r *wideFormRenderer) Objects() []fyne.CanvasObject { return []fyne.CanvasObject{r.form.content} }
 func (r *wideFormRenderer) Destroy()                     {}
@@ -95,35 +78,71 @@ func validate(w fyne.Window, fields map[string]string) bool {
 func showP12Dialog(w fyne.Window, filename, p12Path string) {
 	var d *dialog.CustomDialog
 
-	serverEntry := widget.NewEntry()
-	serverEntry.SetPlaceHolder("servidor:3001")
-	serverEntry.SetText(defaultServer())
-
 	passEntry := newEnterEntry("Contraseña del .p12", true, nil)
 
-	portEntry := widget.NewEntry()
-	portEntry.SetPlaceHolder("8080")
+	localPortEntry := widget.NewEntry()
+	localPortEntry.SetPlaceHolder("8080")
 
 	bindEntry := widget.NewEntry()
 	bindEntry.SetPlaceHolder("127.0.0.1/32")
 	bindEntry.SetText("127.0.0.1/32")
 
+	protoSelect := widget.NewSelect([]string{"TCP", "UDP"}, nil)
+	protoSelect.SetSelected("TCP")
+
+	serverLabel := widget.NewLabel("(se detectará del certificado)")
+	serverLabel.Importance = widget.LowImportance
+
 	connectBtn := widget.NewButton("Conectar", nil)
 	connectBtn.Importance = widget.HighImportance
 	cancelBtn := widget.NewButton("Cancelar", nil)
 
+	// When password changes, try to extract CN to show server
+	passEntry.OnChanged = func(s string) {
+		if len(s) > 0 {
+			cn, err := extractCN(p12Path, s)
+			if err == nil && cn != "" {
+				serverLabel.SetText(cn)
+				serverLabel.Importance = widget.MediumImportance
+			} else {
+				serverLabel.SetText("(contraseña incorrecta)")
+				serverLabel.Importance = widget.DangerImportance
+			}
+			serverLabel.Refresh()
+		}
+	}
+
 	submit := func() {
 		if !validate(w, map[string]string{
-			"Servidor": serverEntry.Text, "Contraseña": passEntry.Text,
-			"Puerto":   portEntry.Text, "Red": bindEntry.Text,
+			"Contraseña": passEntry.Text, "Puerto local": localPortEntry.Text,
+			"Red": bindEntry.Text,
 		}) {
 			return
 		}
+		cn, err := extractCN(p12Path, passEntry.Text)
+		if err != nil {
+			dialog.ShowError(fmt.Errorf("Error leyendo .p12: %v", err), w)
+			return
+		}
+		// Check for duplicate p12
+		tunnelsMu.Lock()
+		for _, existing := range allTunnels {
+			if existing.P12Path == p12Path {
+				tunnelsMu.Unlock()
+				dialog.ShowInformation("Duplicado", "Este certificado ya está registrado", w)
+				return
+			}
+		}
+		tunnelsMu.Unlock()
 		d.Hide()
-		lastServer = serverEntry.Text
+		proto := "tcp"
+		if protoSelect.Selected == "UDP" {
+			proto = "udp"
+		}
 		t := &tunnel{
-			Name: filename, Server: serverEntry.Text, Port: portEntry.Text,
-			P12Path: p12Path, BindCIDR: bindEntry.Text, Password: passEntry.Text,
+			Name: filename, Server: cn, Port: localPortEntry.Text,
+			Protocol: proto, P12Path: p12Path, BindCIDR: bindEntry.Text,
+			Password: passEntry.Text,
 			status: "conectando...", done: make(chan struct{}),
 		}
 		tunnelsMu.Lock()
@@ -138,9 +157,10 @@ func showP12Dialog(w fyne.Window, filename, p12Path string) {
 	cancelBtn.OnTapped = func() { d.Hide() }
 
 	form := newWideForm(420,
-		formRow("Servidor", serverEntry),
+		formRow("Servidor", serverLabel),
 		formRow("Contraseña", passEntry),
-		formRow("Puerto", portEntry),
+		formRow("Puerto local", localPortEntry),
+		formRow("Protocolo", protoSelect),
 		formRow("Red (CIDR)", bindEntry),
 	)
 	content := container.NewVBox(form, container.NewHBox(layout.NewSpacer(), cancelBtn, connectBtn))
@@ -181,7 +201,7 @@ func showReconnectDialog(w fyne.Window, t *tunnel) {
 	form := newWideForm(420, formRow("Contraseña", passEntry))
 	content := container.NewVBox(form, container.NewHBox(layout.NewSpacer(), cancelBtn, connectBtn))
 
-	d = dialog.NewCustomWithoutButtons("Reconectar: "+t.Name, content, w)
+	d = dialog.NewCustomWithoutButtons("Reconectar: "+t.Name+" → "+t.Server, content, w)
 	d.Show()
 	w.Canvas().Focus(passEntry)
 }
@@ -189,14 +209,19 @@ func showReconnectDialog(w fyne.Window, t *tunnel) {
 func showEditDialog(w fyne.Window, t *tunnel) {
 	var d *dialog.CustomDialog
 
-	serverEntry := widget.NewEntry()
-	serverEntry.SetText(t.Server)
-	portEntry := widget.NewEntry()
-	portEntry.SetText(t.Port)
+	localPortEntry := widget.NewEntry()
+	localPortEntry.SetText(t.Port)
 	bindEntry := widget.NewEntry()
 	bindEntry.SetText(t.BindCIDR)
 	if bindEntry.Text == "" {
 		bindEntry.SetText("127.0.0.1/32")
+	}
+
+	protoSelect := widget.NewSelect([]string{"TCP", "UDP"}, nil)
+	if t.Protocol == "udp" {
+		protoSelect.SetSelected("UDP")
+	} else {
+		protoSelect.SetSelected("TCP")
 	}
 
 	saveBtn := widget.NewButton("Guardar", nil)
@@ -204,9 +229,7 @@ func showEditDialog(w fyne.Window, t *tunnel) {
 	cancelBtn := widget.NewButton("Cancelar", nil)
 
 	saveBtn.OnTapped = func() {
-		if !validate(w, map[string]string{
-			"Servidor": serverEntry.Text, "Puerto": portEntry.Text, "Red": bindEntry.Text,
-		}) {
+		if !validate(w, map[string]string{"Puerto local": localPortEntry.Text, "Red": bindEntry.Text}) {
 			return
 		}
 		d.Hide()
@@ -214,21 +237,25 @@ func showEditDialog(w fyne.Window, t *tunnel) {
 			t.stop()
 		}
 		t.mu.Lock()
-		t.Server = serverEntry.Text
-		t.Port = portEntry.Text
+		t.Port = localPortEntry.Text
 		t.BindCIDR = bindEntry.Text
+		if protoSelect.Selected == "UDP" {
+			t.Protocol = "udp"
+		} else {
+			t.Protocol = "tcp"
+		}
 		t.mu.Unlock()
 		persistAndRefresh()
 	}
 	cancelBtn.OnTapped = func() { d.Hide() }
 
 	form := newWideForm(420,
-		formRow("Servidor", serverEntry),
-		formRow("Puerto", portEntry),
+		formRow("Puerto local", localPortEntry),
+		formRow("Protocolo", protoSelect),
 		formRow("Red (CIDR)", bindEntry),
 	)
 	content := container.NewVBox(form, container.NewHBox(layout.NewSpacer(), cancelBtn, saveBtn))
 
-	d = dialog.NewCustomWithoutButtons("Editar: "+t.Name, content, w)
+	d = dialog.NewCustomWithoutButtons("Editar: "+t.Name+" → "+t.Server, content, w)
 	d.Show()
 }

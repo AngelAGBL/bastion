@@ -72,22 +72,32 @@ async function generateCert(uid) {
   } catch (e) { alert(e.message); }
 }
 
-function openEditCert(certId, name, uid) {
+function openEditCert(certId, name, limitIn, limitOut, uid) {
   document.getElementById("modal-edit-cert-id").value = certId;
   document.getElementById("modal-edit-uid").value = uid;
   document.getElementById("modal-edit-name").value = name;
+  document.getElementById("modal-edit-limitin").value = limitIn;
+  document.getElementById("modal-edit-limitout").value = limitOut;
   document.getElementById("modal-edit").classList.remove("hidden");
 }
 async function saveEditCert() {
   const certId = document.getElementById("modal-edit-cert-id").value;
   const uid = document.getElementById("modal-edit-uid").value;
   const name = document.getElementById("modal-edit-name").value.trim();
+  const limitInKiB = Number(document.getElementById("modal-edit-limitin").value);
+  const limitOutKiB = Number(document.getElementById("modal-edit-limitout").value);
   if (!name) return;
   try {
-    await api(`/api/certs/${certId}`, { method: "PUT", body: { name } });
+    await api(`/api/certs/${certId}`, { method: "PUT", body: { name, limitInKiB, limitOutKiB } });
     closeModal("modal-edit");
     loadUserData(uid);
   } catch (e) { alert(e.message); }
+}
+
+async function resetBw(certId, uid) {
+  if (!confirm("¿Resetear bandwidth a 0?")) return;
+  await api(`/api/certs/${certId}/reset-bw`, { method: "POST" });
+  loadUserData(uid);
 }
 
 async function deleteCert(certId, uid) {
@@ -170,7 +180,8 @@ async function loadUserData(uid) {
     const borderClass = running ? " ep-active" : "";
 
     const epName = ep ? esc(ep.name) : '<span style="color:var(--danger)">Endpoint eliminado</span>';
-    const epAddr = ep ? `${esc(ep.host)}:${ep.port}` : '—';
+    const epProto = ep ? (ep.protocol || 'tcp').toUpperCase() : '';
+    const epAddr = ep ? `${epProto} ${esc(ep.host)}:${ep.port}` : '—';
 
     html += `<div class="card${borderClass}" style="padding:.75rem;margin-bottom:.5rem">`;
     html += `<div class="row mb">`;
@@ -188,7 +199,6 @@ async function loadUserData(uid) {
         html += `<select id="dur-${epId}-${uid}" style="width:auto">${durOpts}</select>`;
         html += `<button class="btn btn-primary btn-sm" onclick="activateAccess('${uid}','${epId}')">Activar</button>`;
       }
-      html += `<button class="btn btn-ghost btn-sm" onclick="revokeAccess('${uid}','${epId}')">Revocar</button>`;
       html += `</div>`;
     }
 
@@ -207,19 +217,21 @@ async function loadUserData(uid) {
       const outLabel = outLimit > 0 ? `↓${(usedOut/1024).toFixed(1)}/${outLimit}KiB` : '↓∞';
       const inExceeded = inLimit > 0 && usedIn >= inLimit * 1024;
       const outExceeded = outLimit > 0 && usedOut >= outLimit * 1024;
-      const bwStyle = (inExceeded || outExceeded) ? 'color:var(--danger)' : 'color:var(--muted)';
+      const inStyle = inExceeded ? 'color:var(--danger)' : 'color:var(--muted)';
+      const outStyle = outExceeded ? 'color:var(--danger)' : 'color:var(--muted)';
 
       html += `<div class="card cert-card" data-cert-id="${c._id}" style="padding:.5rem;background:var(--bg)">`;
       html += `<div class="row"><strong style="font-size:.85rem;padding-bottom:.5rem;">${esc(c.name)}</strong></div>`;
       html += `<div class="row" style="font-size:.7rem;gap:.5rem">`;
-      html += `<span class="cert-bw" style="${bwStyle};white-space:nowrap">${inLabel} ${outLabel}</span>`;
+      html += `<span class="cert-bw" style="${inStyle};white-space:nowrap">${inLabel}</span> <span class="cert-bw" style="${outStyle};white-space:nowrap">${outLabel}</span>`;
       html += `<div class="grow"></div>`;
       html += `<span class="cert-ttl" data-expires="${c.expiresAt || ''}" style="${expStyle};white-space:nowrap">${expLabel}</span>`;
       html += `</div>`;
       html += `<div class="row mt" style="gap:.25rem">`;
       html += `<button class="btn btn-ghost btn-sm" onclick="downloadP12('${c._id}')">⬇ .p12</button>`;
+      html += `<button class="btn btn-ghost btn-sm" onclick="resetBw('${c._id}','${uid}')" title="Resetear bandwidth">↺</button>`;
       html += `<div class="grow"></div>`;
-      html += `<button class="btn btn-ghost btn-sm" onclick="openEditCert('${c._id}','${esc(c.name)}','${uid}')">✎</button>`;
+      html += `<button class="btn btn-ghost btn-sm" onclick="openEditCert('${c._id}','${esc(c.name)}',${inLimit},${outLimit},'${uid}')">✎</button>`;
       html += `<button class="btn btn-danger btn-sm" onclick="deleteCert('${c._id}','${uid}')">×</button>`;
       html += `</div></div>`;
     }

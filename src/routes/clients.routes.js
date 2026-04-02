@@ -125,16 +125,32 @@ export function registerClientsRoutes(app) {
 
   app.put("/api/certs/:id", authMiddleware, async (req, res) => {
     try {
-      const { name } = req.body;
-      if (!name) return res.status(400).json({ error: "nothing to update" });
+      const { name, limitInKiB, limitOutKiB } = req.body;
+      const update = {};
+      if (name) update.name = name;
+      if (limitInKiB !== undefined) update.limitInKiB = Number(limitInKiB);
+      if (limitOutKiB !== undefined) update.limitOutKiB = Number(limitOutKiB);
+      if (!Object.keys(update).length) return res.status(400).json({ error: "nothing to update" });
       const db = getDB();
       const r = await db.collection("certificates").findOneAndUpdate(
-        { _id: new ObjectId(req.params.id) }, { $set: { name } },
+        { _id: new ObjectId(req.params.id) }, { $set: update },
         { returnDocument: "after", projection: { clientCert: 0, keyPem: 0 } }
       );
       if (!r) return res.status(404).json({ error: "not found" });
       res.json(r);
     } catch { res.status(400).json({ error: "error" }); }
+  });
+
+  // Reset bandwidth usage to 0
+  app.post("/api/certs/:id/reset-bw", authMiddleware, async (req, res) => {
+    const db = getDB();
+    const r = await db.collection("certificates").findOneAndUpdate(
+      { _id: new ObjectId(req.params.id) },
+      { $set: { usedInBytes: 0, usedOutBytes: 0 } },
+      { returnDocument: "after", projection: { clientCert: 0, keyPem: 0 } }
+    );
+    if (!r) return res.status(404).json({ error: "not found" });
+    res.json(r);
   });
 
   app.delete("/api/certs/:id", authMiddleware, async (req, res) => {

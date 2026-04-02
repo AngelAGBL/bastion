@@ -30,8 +30,8 @@ app.get("/", (_req, res) => res.redirect("/dashboard/clients"));
 
 async function main() {
   await connectDB();
-  app.listen(PORT_HTTP, () => console.log(`[http] :${PORT_HTTP}`));
-  startWSServer(PORT_WS);
+  app.listen(PORT_HTTP || 3000, () => console.log(`[http] :${PORT_HTTP}`));
+  startWSServer(PORT_WS || 3001);
 
   async function purgeExpired() {
     try {

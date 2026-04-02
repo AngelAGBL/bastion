@@ -22,21 +22,26 @@ export function registerEndpointsRoutes(app) {
 
   app.post("/dashboard/endpoints", pageAuth, async (req, res) => {
     try {
-      const { name, host, port } = req.body;
+      const { name, host, port, protocol } = req.body;
       if (!name || !host || !port) return res.redirect("/dashboard/endpoints");
       const db = getDB();
-      await db.collection("endpoints").insertOne({ name, host, port: Number(port), targetId: generateTargetId(), createdAt: new Date() });
+      await db.collection("endpoints").insertOne({
+        name, host, port: Number(port),
+        protocol: protocol === "udp" ? "udp" : "tcp",
+        targetId: generateTargetId(), createdAt: new Date(),
+      });
     } catch {}
     res.redirect("/dashboard/endpoints");
   });
 
   app.put("/api/endpoints/:id", authMiddleware, async (req, res) => {
     try {
-      const { name, host, port } = req.body;
+      const { name, host, port, protocol } = req.body;
       const update = {};
       if (name) update.name = name;
       if (host) update.host = host;
       if (port) update.port = Number(port);
+      if (protocol === "tcp" || protocol === "udp") update.protocol = protocol;
       if (!Object.keys(update).length) return res.status(400).json({ error: "nothing to update" });
       const db = getDB();
       const r = await db.collection("endpoints").findOneAndUpdate({ _id: new ObjectId(req.params.id) }, { $set: update }, { returnDocument: "after" });
