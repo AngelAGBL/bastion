@@ -2,3 +2,11 @@ node_modules
 .git
 .env
 data/
+client/
+deploy/
+compose.yml
+Dockerfile
+.dockerignore
+.gitignore
+.git/
+.vscode/
