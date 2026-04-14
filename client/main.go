@@ -195,8 +195,10 @@ func main() {
 			statusL.SetText(status)
 			if active {
 				statusL.Importance = widget.SuccessImportance
+			} else if strings.HasPrefix(status, "error") {
+				statusL.Importance = widget.DangerImportance
 			} else {
-				statusL.Importance = widget.MediumImportance
+				statusL.Importance = widget.WarningImportance
 			}
 			statusL.Refresh()
 			bwText, inOver, outOver := bwStatusText(t)

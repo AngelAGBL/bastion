@@ -91,7 +91,8 @@ export function registerClientsRoutes(app) {
       const result = generateClientCert(name, days);
       const r = await db.collection("certificates").insertOne({
         tunnelUserId: req.params.id, endpointId: new ObjectId(endpointId),
-        name, fingerprint: result.fingerprint, clientCert: result.certPem, keyPem: result.keyPem,
+        name, fingerprint: result.fingerprint,
+        clientCert: result.certPem, keyPem: result.keyPem,
         limitInKiB: inKiB, limitOutKiB: outKiB, usedInBytes: 0, usedOutBytes: 0,
         createdAt: new Date(),
         expiresAt: new Date(Date.now() + days * 24 * 60 * 60 * 1000),

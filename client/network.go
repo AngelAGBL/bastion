@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -77,6 +78,7 @@ func dialWS(server string, tlsConfig *tls.Config) (net.Conn, *bufio.Reader, *htt
 }
 
 // extractCN reads a p12 file and returns the CN from the client certificate (contains host:port).
+// If no port is present, defaults to :443.
 func extractCN(p12Path, password string) (string, error) {
 	data, err := os.ReadFile(p12Path)
 	if err != nil {
@@ -86,7 +88,11 @@ func extractCN(p12Path, password string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return cert.Subject.CommonName, nil
+	cn := cert.Subject.CommonName
+	if cn != "" && !strings.Contains(cn, ":") {
+		cn += ":443"
+	}
+	return cn, nil
 }
 
 func failTunnel(t *tunnel, msg string) {

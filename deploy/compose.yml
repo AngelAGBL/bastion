@@ -19,10 +19,11 @@ services:
       PORT_WS: 3001
       MONGO_URI: mongodb://mongo:27017/bastion
       JWT_SECRET: change-this-to-something-random-at-least-32!!
-      WSHOST: bastion.example.com:443
+      WSHOST: 10.50.228.182:2443
       TLS_MODE: proxy
+      TRUSTED_PROXIES: nginx
     volumes:
-      - ca_data:/app/data
+      - ./ca_data:/app/data/ca:ro,z
     depends_on:
       - mongo
 
@@ -30,16 +31,13 @@ services:
     image: nginx:alpine
     restart: unless-stopped
     ports:
-      - "80:80"
-      - "443:443"
+      - "2080:80"
+      - "2443:443"
     volumes:
-      - ./nginx.conf:/etc/nginx/nginx.conf:ro
-      - certs:/etc/nginx/certs
-      - ca_data:/etc/nginx/ca:ro
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro,z
+      - ./ca_data:/etc/nginx/certs:ro,z
     depends_on:
       - app
 
 volumes:
   mongo_data:
-  ca_data:
-  certs:

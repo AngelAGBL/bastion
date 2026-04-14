@@ -13,9 +13,73 @@ const INTERNAL_PORT = 19876;
 const certLocks = new Map();
 const certSockets = new Map();
 
+// TRUSTED_PROXIES: comma-separated list of IPs/hostnames allowed to send cert headers.
+// Resolved to IPs at startup. Supports IPv4, IPv6, and IPv4-mapped-IPv6.
+const TRUSTED_PROXIES_RAW = (process.env.TRUSTED_PROXIES || "")
+  .split(",").map(s => s.trim()).filter(Boolean);
+const TRUSTED_PROXIES = new Set();
+
+async function resolveTrustedProxies() {
+  const dns = await import("node:dns");
+  for (const entry of TRUSTED_PROXIES_RAW) {
+    // If it looks like an IP, add it directly
+    if (/^[\d.:a-f]+$/i.test(entry)) {
+      TRUSTED_PROXIES.add(entry);
+      TRUSTED_PROXIES.add(`::ffff:${entry}`); // IPv4-mapped
+    } else {
+      // Resolve hostname
+      try {
+        const addrs = await dns.promises.resolve(entry);
+        for (const addr of addrs) {
+          TRUSTED_PROXIES.add(addr);
+          TRUSTED_PROXIES.add(`::ffff:${addr}`);
+        }
+      } catch { TRUSTED_PROXIES.add(entry); }
+    }
+  }
+  if (TRUSTED_PROXIES.size) log(`trusted proxies: ${[...TRUSTED_PROXIES].join(", ")}`);
+}
+
+/** Normalize IPv6-mapped-IPv4 from uWS format (0000:0000:0000:0000:0000:ffff:XXYY:ZZWW) to readable form */
+function normalizeIP(raw) {
+  // uWS returns full IPv6 like 0000:0000:0000:0000:0000:ffff:0a59:0904
+  const m = raw.match(/^(?:0000:){5}ffff:([0-9a-f]{2})([0-9a-f]{2}):([0-9a-f]{2})([0-9a-f]{2})$/i);
+  if (m) {
+    const ipv4 = `${parseInt(m[1],16)}.${parseInt(m[2],16)}.${parseInt(m[3],16)}.${parseInt(m[4],16)}`;
+    return [raw, ipv4, `::ffff:${ipv4}`];
+  }
+  return [raw];
+}
+
 function log(...args) {
   const msg = args.map(a => typeof a === "object" ? JSON.stringify(a) : String(a)).join(" ");
   console.log(`[ws ${new Date().toISOString()}] ${msg}`);
+}
+
+/** Extract SHA256 fingerprint from request headers.
+ *  - Direct mTLS mode: x-fingerprint header (already SHA256, from local tls proxy)
+ *  - Proxy mode: x-ssl-client-cert header (URL-encoded PEM) → compute SHA256
+ *  In proxy mode, only accepts cert headers from TRUSTED_PROXIES.
+ */
+function extractFingerprint(req, res) {
+  if (PROXY_MODE && TRUSTED_PROXIES.size > 0) {
+    const rawIP = Buffer.from(res.getRemoteAddressAsText()).toString();
+    const candidates = normalizeIP(rawIP);
+    if (!candidates.some(ip => TRUSTED_PROXIES.has(ip))) {
+      log(`UNTRUSTED proxy ${rawIP} — ignoring cert headers`);
+      return "";
+    }
+  }
+
+  const certEncoded = headerStr(req, "x-ssl-client-cert");
+  if (certEncoded) {
+    try {
+      const pem = decodeURIComponent(certEncoded);
+      const x509 = new crypto.X509Certificate(pem);
+      return crypto.createHash("sha256").update(x509.raw).digest("hex");
+    } catch { return ""; }
+  }
+  return "";
 }
 
 function releaseCertLock(fp) {
@@ -34,6 +98,7 @@ function allHeaders(req) {
 }
 
 export async function startWSServer(port) {
+  await resolveTrustedProxies();
   const uwsApp = uWS.App();
 
   // --- HTTP: / handler (verify + health) ---
@@ -41,17 +106,20 @@ export async function startWSServer(port) {
     let aborted = false;
     res.onAborted(() => { aborted = true; });
 
-    const fp = headerStr(req, "x-fingerprint") || headerStr(req, "x-ssl-client-fingerprint");
+    const fp = extractFingerprint(req, res);
     if (!fp) {
       if (!aborted) res.cork(() => { res.writeStatus("200 OK").writeHeader("Content-Type", "text/plain").end("bastion-ws alive\n"); });
       return;
     }
+
+    log(`verify: fp=${fp.slice(0, 16)}…`);
 
     try {
       const db = getDB();
       const cert = await db.collection("certificates").findOne({ fingerprint: fp },
         { projection: { _id: 1, limitInKiB: 1, limitOutKiB: 1, usedInBytes: 1, usedOutBytes: 1, tunnelUserId: 1, endpointId: 1 } });
       if (!cert) {
+        log(`verify REJECT: fp=${fp.slice(0, 16)}… not in DB`);
         if (!aborted) res.cork(() => res.writeStatus("403 Forbidden").end("cert not registered\n"));
         return;
       }
@@ -89,7 +157,7 @@ export async function startWSServer(port) {
       let aborted = false;
       res.onAborted(() => { aborted = true; });
 
-      const fp = headerStr(req, "x-fingerprint") || headerStr(req, "x-ssl-client-fingerprint");
+      const fp = extractFingerprint(req, res);
       const secKey = headerStr(req, "sec-websocket-key");
       const secProto = headerStr(req, "sec-websocket-protocol");
       const secExt = headerStr(req, "sec-websocket-extensions");
@@ -104,7 +172,8 @@ export async function startWSServer(port) {
 
       try {
         const db = getDB();
-        const cert = await db.collection("certificates").findOne({ fingerprint: fp });
+        const query = { fingerprint: fp };
+        const cert = await db.collection("certificates").findOne(query);
         if (!cert) { if (!aborted) res.cork(() => res.writeStatus("403 Forbidden").end()); return; }
 
         let userName = null;

@@ -25,10 +25,9 @@ services:
       - ./src:/app/src:z
       - ./views:/app/views:z
       - ./public:/app/public:z
-      - ca_data:/app/data
+      - ./ca_data:/app/data/ca
     depends_on:
       - mongo
 
 volumes:
   mongo_data:
-  ca_data:
