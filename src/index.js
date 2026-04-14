@@ -5,7 +5,6 @@ import { startWSServer } from "./ws-server.js";
 import { registerAuthRoutes } from "./routes/auth.routes.js";
 import { registerClientsRoutes } from "./routes/clients.routes.js";
 import { registerEndpointsRoutes } from "./routes/endpoints.routes.js";
-import { registerAuditRoutes } from "./routes/audit.routes.js";
 import { registerAdminsRoutes } from "./routes/admins.routes.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -23,7 +22,6 @@ app.use(express.static(PUBLIC));
 registerAuthRoutes(app);
 registerClientsRoutes(app);
 registerEndpointsRoutes(app);
-registerAuditRoutes(app);
 registerAdminsRoutes(app);
 
 app.get("/", (_req, res) => res.redirect("/dashboard/clients"));

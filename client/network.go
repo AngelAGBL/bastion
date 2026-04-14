@@ -23,14 +23,14 @@ type verifyResult struct {
 	limitOutKiB  int
 	usedInBytes  int64
 	usedOutBytes int64
-	active       bool
+	endpointSecs int
 	err          string
 }
 
 func callVerify(server string, tlsConfig *tls.Config) verifyResult {
 	tr := &http.Transport{TLSClientConfig: tlsConfig, DisableKeepAlives: true}
 	cl := &http.Client{Transport: tr}
-	resp, err := cl.Get(fmt.Sprintf("https://%s/verify", server))
+	resp, err := cl.Get(fmt.Sprintf("https://%s/", server))
 	if err != nil {
 		return verifyResult{err: "certificado rechazado"}
 	}
@@ -41,12 +41,13 @@ func callVerify(server string, tlsConfig *tls.Config) verifyResult {
 	}
 	var limitIn, limitOut int
 	var usedIn, usedOut int64
+	var endpointSecs int
 	fmt.Sscanf(resp.Header.Get("X-Limit-In-KiB"), "%d", &limitIn)
 	fmt.Sscanf(resp.Header.Get("X-Limit-Out-KiB"), "%d", &limitOut)
 	fmt.Sscanf(resp.Header.Get("X-Used-In-Bytes"), "%d", &usedIn)
 	fmt.Sscanf(resp.Header.Get("X-Used-Out-Bytes"), "%d", &usedOut)
-	active := resp.Header.Get("X-Active") == "true"
-	return verifyResult{ok: true, limitInKiB: limitIn, limitOutKiB: limitOut, usedInBytes: usedIn, usedOutBytes: usedOut, active: active}
+	fmt.Sscanf(resp.Header.Get("X-Endpoint-Seconds"), "%d", &endpointSecs)
+	return verifyResult{ok: true, limitInKiB: limitIn, limitOutKiB: limitOut, usedInBytes: usedIn, usedOutBytes: usedOut, endpointSecs: endpointSecs}
 }
 
 func dialWS(server string, tlsConfig *tls.Config) (net.Conn, *bufio.Reader, *http.Response, error) {
@@ -111,6 +112,10 @@ func connectTunnel(w fyne.Window, t *tunnel) {
 		return
 	}
 	tlsCert := tls.Certificate{Certificate: [][]byte{cert.Raw}, PrivateKey: privateKey}
+	// Store cert expiry for display
+	t.mu.Lock()
+	t.certExpiry = cert.NotAfter
+	t.mu.Unlock()
 	caPool := x509.NewCertPool()
 	for _, ca := range caCerts {
 		caPool.AddCert(ca)
@@ -123,8 +128,17 @@ func connectTunnel(w fyne.Window, t *tunnel) {
 		return
 	}
 	t.setBandwidth(vr.limitInKiB, vr.limitOutKiB, vr.usedInBytes, vr.usedOutBytes)
-	if !vr.active {
+	t.setEndpointTime(vr.endpointSecs)
+	if vr.endpointSecs == 0 {
 		failTunnel(t, "error: endpoint no activo")
+		return
+	}
+	if vr.limitInKiB > 0 && vr.usedInBytes >= int64(vr.limitInKiB)*1024 {
+		failTunnel(t, "error: límite de subida excedido")
+		return
+	}
+	if vr.limitOutKiB > 0 && vr.usedOutBytes >= int64(vr.limitOutKiB)*1024 {
+		failTunnel(t, "error: límite de bajada excedido")
 		return
 	}
 
@@ -291,6 +305,7 @@ func handleConn(local net.Conn, t *tunnel, tlsConfig *tls.Config) {
 	post := callVerify(t.Server, tlsConfig)
 	if post.ok {
 		t.setBandwidth(post.limitInKiB, post.limitOutKiB, post.usedInBytes, post.usedOutBytes)
+		t.setEndpointTime(post.endpointSecs)
 	}
 	refreshList()
 }

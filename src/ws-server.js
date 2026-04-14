@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import net from "node:net";
+import http from "node:http";
 import dgram from "node:dgram";
 import https from "node:https";
 import { WebSocketServer } from "ws";
@@ -8,8 +9,9 @@ import { ensureCA, generateServerCert, getCACert } from "./services/ca.js";
 import { getDB } from "./services/db.js";
 import bus from "./services/events.js";
 
-const PREVIEW_MAX = 256;
-const activeFingerprints = new Set(); // track connected certs
+const PROXY_MODE = process.env.TLS_MODE === "proxy";
+const certLocks = new Map();
+const certSockets = new Map();
 
 function log(...args) {
   const msg = args.map(a => typeof a === "object" ? JSON.stringify(a) : String(a)).join(" ");
@@ -22,87 +24,102 @@ function reject(socket, code, reason) {
   socket.destroy();
 }
 
+function releaseCertLock(fp) {
+  const lock = certLocks.get(fp);
+  if (lock) { lock.count--; if (lock.count <= 0) certLocks.delete(fp); }
+}
+
+/**
+ * Extract fingerprint from request.
+ * Direct mTLS: from TLS peer certificate.
+ * Proxy mode: from X-SSL-Client-Fingerprint header (proxy must set X-SSL-Client-Verify=SUCCESS).
+ */
+function extractFingerprint(req) {
+  if (PROXY_MODE) {
+    const verify = req.headers["x-ssl-client-verify"];
+    if (verify !== "SUCCESS") return null;
+    const fp = req.headers["x-ssl-client-fingerprint"];
+    return fp ? fp.replace(/:/g, "").toLowerCase() : null;
+  }
+  const peerCert = req.socket.getPeerCertificate?.(true);
+  if (!peerCert || !peerCert.raw || peerCert.raw.length === 0) return null;
+  return crypto.createHash("sha256").update(peerCert.raw).digest("hex");
+}
+
+function getRemoteIP(req) {
+  if (PROXY_MODE) return req.headers["x-forwarded-for"]?.split(",")[0]?.trim() || req.socket.remoteAddress;
+  return req.socket.remoteAddress;
+}
+
 export async function startWSServer(port) {
-  ensureCA();
-  const serverTls = generateServerCert();
-  const caCertPem = getCACert();
+  let server;
 
-  const server = https.createServer({
-    key: serverTls.key,
-    cert: serverTls.cert,
-    ca: [caCertPem],
-    requestCert: true,
-    rejectUnauthorized: true,
-  });
+  if (PROXY_MODE) {
+    log("mode: PROXY (TLS terminated by reverse proxy)");
+    server = http.createServer();
+  } else {
+    log("mode: DIRECT mTLS");
+    ensureCA();
+    const serverTls = generateServerCert();
+    const caCertPem = getCACert();
+    server = https.createServer({
+      key: serverTls.key, cert: serverTls.cert, ca: [caCertPem],
+      requestCert: true, rejectUnauthorized: true,
+    });
+    server.on("tlsClientError", (err) => log(`TLS REJECT: ${err.message}`));
+  }
 
-  server.on("tlsClientError", (err, tlsSocket) => {
-    log(`TLS REJECT: ${err.message}`);
-    tlsSocket.destroy();
-  });
-
+  // --- HTTP handler: / serves both verify (with cert) and health check ---
   server.on("request", async (req, res) => {
     try {
-      if (req.url === "/verify") {
-        const peerCert = req.socket.getPeerCertificate(true);
-        if (!peerCert || !peerCert.raw || peerCert.raw.length === 0) {
-          res.writeHead(403, { "Content-Type": "text/plain" });
-          return res.end("no cert\n");
-        }
-        const fingerprint = crypto.createHash("sha256").update(peerCert.raw).digest("hex");
-        const db = getDB();
-        const cert = await db.collection("certificates").findOne({ fingerprint }, { projection: { _id: 1, limitInKiB: 1, limitOutKiB: 1, usedInBytes: 1, usedOutBytes: 1, tunnelUserId: 1, endpointId: 1 } });
-        if (!cert) {
-          res.writeHead(403, { "Content-Type": "text/plain" });
-          return res.end("cert not registered\n");
-        }
-        const now = new Date();
-        const window = cert.endpointId ? await db.collection("access_windows").findOne({
-          tunnelUserId: cert.tunnelUserId, endpointId: cert.endpointId,
-          active: true, from: { $lte: now }, until: { $gte: now },
-        }) : null;
-        const limitIn = cert.limitInKiB || 0;
-        const limitOut = cert.limitOutKiB || 0;
-        const usedIn = cert.usedInBytes || 0;
-        const usedOut = cert.usedOutBytes || 0;
-        const remainIn = limitIn > 0 ? Math.max(0, limitIn * 1024 - usedIn) : -1;
-        const remainOut = limitOut > 0 ? Math.max(0, limitOut * 1024 - usedOut) : -1;
-        res.writeHead(200, {
-          "Content-Type": "text/plain",
-          "X-Limit-In-KiB": String(limitIn),
-          "X-Limit-Out-KiB": String(limitOut),
-          "X-Used-In-Bytes": String(usedIn),
-          "X-Used-Out-Bytes": String(usedOut),
-          "X-Remain-In-Bytes": String(remainIn),
-          "X-Remain-Out-Bytes": String(remainOut),
-          "X-Active": window ? "true" : "false",
-          "Connection": "close",
-        });
-        return res.end("ok\n");
+      const fp = extractFingerprint(req);
+      if (!fp) {
+        res.writeHead(200, { "Content-Type": "text/plain" });
+        return res.end("bastion-ws alive\n");
       }
-      res.writeHead(200, { "Content-Type": "text/plain" });
-      res.end("bastion-ws alive\n");
+
+      const db = getDB();
+      const cert = await db.collection("certificates").findOne({ fingerprint: fp },
+        { projection: { _id: 1, limitInKiB: 1, limitOutKiB: 1, usedInBytes: 1, usedOutBytes: 1, tunnelUserId: 1, endpointId: 1 } });
+      if (!cert) {
+        res.writeHead(403, { "Content-Type": "text/plain" });
+        return res.end("cert not registered\n");
+      }
+
+      const now = new Date();
+      const window = cert.endpointId ? await db.collection("access_windows").findOne({
+        tunnelUserId: cert.tunnelUserId, endpointId: cert.endpointId,
+        active: true, from: { $lte: now }, until: { $gte: now },
+      }) : null;
+
+      const endpointSecs = window ? Math.max(0, Math.floor((new Date(window.until).getTime() - now.getTime()) / 1000)) : 0;
+
+      res.writeHead(200, {
+        "Content-Type": "text/plain",
+        "X-Limit-In-KiB": String(cert.limitInKiB || 0),
+        "X-Limit-Out-KiB": String(cert.limitOutKiB || 0),
+        "X-Used-In-Bytes": String(cert.usedInBytes || 0),
+        "X-Used-Out-Bytes": String(cert.usedOutBytes || 0),
+        "X-Endpoint-Seconds": String(endpointSecs),
+        "Connection": "close",
+      });
+      return res.end("ok\n");
     } catch (e) {
       log("request error:", e.message);
       try { res.writeHead(500); res.end("error\n"); } catch {}
     }
   });
 
+  // --- WebSocket ---
   const wss = new WebSocketServer({
-    noServer: true,
-    skipUTF8Validation: true,
-    handleProtocols: (protocols) => {
-      if (protocols.has("v1")) return "v1";
-      return false;
-    },
+    noServer: true, skipUTF8Validation: true,
+    handleProtocols: (protocols) => protocols.has("v1") ? "v1" : false,
   });
 
   server.on("upgrade", async (req, socket, head) => {
     log(`upgrade: path=${req.url}`);
-    const peerCert = req.socket.getPeerCertificate(true);
-    if (!peerCert || !peerCert.raw || peerCert.raw.length === 0) {
-      return reject(socket, "403 Forbidden", "no client cert");
-    }
-    const fingerprint = crypto.createHash("sha256").update(peerCert.raw).digest("hex");
+    const fingerprint = extractFingerprint(req);
+    if (!fingerprint) return reject(socket, "403 Forbidden", "no client cert");
     log(`fp=${fingerprint.slice(0, 16)}…`);
 
     try {
@@ -124,46 +141,45 @@ export async function startWSServer(port) {
       });
       if (!window) return reject(socket, "403 Forbidden", "no active access window");
 
-      // Check bandwidth limits — reject but don't delete
       const limitInBytes = (cert.limitInKiB || 0) * 1024;
       const limitOutBytes = (cert.limitOutKiB || 0) * 1024;
-      if (limitInBytes > 0 && (cert.usedInBytes || 0) >= limitInBytes) {
-        return reject(socket, "403 Forbidden", "upload limit exceeded");
-      }
-      if (limitOutBytes > 0 && (cert.usedOutBytes || 0) >= limitOutBytes) {
-        return reject(socket, "403 Forbidden", "download limit exceeded");
-      }
+      if (limitInBytes > 0 && (cert.usedInBytes || 0) >= limitInBytes) return reject(socket, "403 Forbidden", "upload limit exceeded");
+      if (limitOutBytes > 0 && (cert.usedOutBytes || 0) >= limitOutBytes) return reject(socket, "403 Forbidden", "download limit exceeded");
 
-      // Reject if this cert already has an active connection
-      if (activeFingerprints.has(fingerprint)) {
-        return reject(socket, "403 Forbidden", "cert already connected");
-      }
+      const remoteIP = getRemoteIP(req);
+      const lock = certLocks.get(fingerprint);
+      if (lock && lock.ip !== remoteIP) return reject(socket, "403 Forbidden", "cert in use from another IP");
 
       log(`GRANTED: ${cert.name} → ${endpoint.protocol || "tcp"}://${endpoint.host}:${endpoint.port}`);
-      activeFingerprints.add(fingerprint);
+      if (lock) lock.count++; else certLocks.set(fingerprint, { ip: remoteIP, count: 1 });
 
       wss.handleUpgrade(req, socket, head, (ws) => {
+        if (!certSockets.has(fingerprint)) certSockets.set(fingerprint, new Set());
+        certSockets.get(fingerprint).add(ws);
+
         const proto = endpoint.protocol || "tcp";
-        const limitIn = (cert.limitInKiB || 0) * 1024;
-        const limitOut = (cert.limitOutKiB || 0) * 1024;
+        const limitIn = limitInBytes;
+        const limitOut = limitOutBytes;
         let totalIn = cert.usedInBytes || 0;
         let totalOut = cert.usedOutBytes || 0;
 
         function checkLimits() {
-          if (limitIn > 0 && totalIn >= limitIn) {
-            log(`cert ${cert.name}: upload limit hit (${totalIn}/${limitIn})`);
-            ws.close();
-            return true;
-          }
-          if (limitOut > 0 && totalOut >= limitOut) {
-            log(`cert ${cert.name}: download limit hit (${totalOut}/${limitOut})`);
-            ws.close();
+          if ((limitIn > 0 && totalIn >= limitIn) || (limitOut > 0 && totalOut >= limitOut)) {
+            log(`cert ${cert.name}: bandwidth limit — closing ALL`);
+            const socks = certSockets.get(fingerprint);
+            if (socks) for (const s of socks) { try { s.close(); } catch {} }
             return true;
           }
           return false;
         }
 
-        function trackUpload(chunk) {
+        function cleanup() {
+          releaseCertLock(fingerprint);
+          const socks = certSockets.get(fingerprint);
+          if (socks) { socks.delete(ws); if (socks.size === 0) certSockets.delete(fingerprint); }
+        }
+
+        function trackUp(chunk) {
           totalIn += chunk.length;
           db.collection("certificates").updateOne({ _id: cert._id }, { $inc: { usedInBytes: chunk.length } }).catch(() => {});
           bus.emit("cert:bandwidth", { certId: String(cert._id), usedInBytes: chunk.length, inc: true });
@@ -171,7 +187,7 @@ export async function startWSServer(port) {
           checkLimits();
         }
 
-        function trackDownload(data) {
+        function trackDown(data) {
           totalOut += data.length;
           db.collection("certificates").updateOne({ _id: cert._id }, { $inc: { usedOutBytes: data.length } }).catch(() => {});
           bus.emit("cert:bandwidth", { certId: String(cert._id), usedOutBytes: data.length, inc: true });
@@ -181,37 +197,23 @@ export async function startWSServer(port) {
 
         if (proto === "udp") {
           const udp = dgram.createSocket("udp4");
-          udp.on("message", (msg) => {
-            if (ws.readyState === 1) ws.send(msg);
-            trackDownload(msg);
-          });
+          udp.on("message", (msg) => { if (ws.readyState === 1) ws.send(msg); trackDown(msg); });
           udp.on("error", (e) => { log(`udp err: ${e.message}`); ws.close(); });
-          ws.on("message", (data) => {
-            const chunk = Buffer.isBuffer(data) ? data : Buffer.from(data);
-            udp.send(chunk, endpoint.port, endpoint.host);
-            trackUpload(chunk);
-          });
-          ws.on("close", () => { activeFingerprints.delete(fingerprint); try { udp.close(); } catch {} });
-          ws.on("error", () => { activeFingerprints.delete(fingerprint); try { udp.close(); } catch {} });
+          ws.on("message", (data) => { const c = Buffer.isBuffer(data) ? data : Buffer.from(data); udp.send(c, endpoint.port, endpoint.host); trackUp(c); });
+          ws.on("close", () => { cleanup(); try { udp.close(); } catch {} });
+          ws.on("error", () => { cleanup(); try { udp.close(); } catch {} });
         } else {
           const tcp = net.createConnection({ host: endpoint.host, port: endpoint.port });
           tcp.setNoDelay(true);
-          let tcpReady = false;
+          let ready = false;
           const buf = [];
-          tcp.on("connect", () => { log(`tcp connected ${endpoint.host}:${endpoint.port}`); tcpReady = true; for (const b of buf) tcp.write(b); buf.length = 0; });
-          tcp.on("data", (data) => {
-            if (ws.readyState === 1) ws.send(data);
-            trackDownload(data);
-          });
-          ws.on("message", (data) => {
-            const chunk = Buffer.isBuffer(data) ? data : Buffer.from(data);
-            if (tcpReady) tcp.write(chunk); else buf.push(chunk);
-            trackUpload(chunk);
-          });
+          tcp.on("connect", () => { log(`tcp connected ${endpoint.host}:${endpoint.port}`); ready = true; for (const b of buf) tcp.write(b); buf.length = 0; });
+          tcp.on("data", (d) => { if (ws.readyState === 1) ws.send(d); trackDown(d); });
+          ws.on("message", (d) => { const c = Buffer.isBuffer(d) ? d : Buffer.from(d); if (ready) tcp.write(c); else buf.push(c); trackUp(c); });
           tcp.on("error", (e) => { log(`tcp err: ${e.message}`); ws.close(); });
           tcp.on("close", () => ws.close());
-          ws.on("close", (code) => { log(`ws closed code=${code}`); activeFingerprints.delete(fingerprint); tcp.destroy(); });
-          ws.on("error", (e) => { log(`ws err: ${e.message}`); activeFingerprints.delete(fingerprint); tcp.destroy(); });
+          ws.on("close", (code) => { log(`ws closed code=${code}`); cleanup(); tcp.destroy(); });
+          ws.on("error", (e) => { log(`ws err: ${e.message}`); cleanup(); tcp.destroy(); });
         }
       });
     } catch (e) {
@@ -220,11 +222,7 @@ export async function startWSServer(port) {
     }
   });
 
-  server.listen(port, () => log(`mTLS WS tunnel on :${port}`));
-}
-
-function makePreview(buf) {
-  return buf.toString("utf-8", 0, Math.min(buf.length, PREVIEW_MAX)).replace(/[\x00-\x08\x0E-\x1F]/g, "�");
+  server.listen(port, () => log(`WS tunnel on :${port} (${PROXY_MODE ? "proxy" : "direct mTLS"})`));
 }
 
 function logTraffic(cert, endpoint, direction, data) {
@@ -234,10 +232,9 @@ function logTraffic(cert, endpoint, direction, data) {
     certId: cert._id, certName: cert.name, fingerprint: cert.fingerprint,
     endpointId: endpoint._id, endpointName: endpoint.name,
     targetHost: endpoint.host, targetPort: endpoint.port,
-    direction, bytes: data.length, preview: makePreview(data),
-    rawHex: data.toString("hex"), ts: new Date(),
+    direction, bytes: data.length, rawHex: data.toString("hex"), ts: new Date(),
   };
   db.collection("audit_logs").insertOne(doc).then((r) => {
-    bus.emit("audit:log", { ...doc, _id: r.insertedId, rawHex: undefined });
+    bus.emit("audit:log", { ...doc, _id: r.insertedId });
   }).catch(() => {});
 }

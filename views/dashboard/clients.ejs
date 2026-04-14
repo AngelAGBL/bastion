@@ -1,9 +1,9 @@
 <script type="application/json" id="endpoints-data"><%- JSON.stringify(endpoints) %></script>
 
 <div class="row mb">
-  <input id="search-users" placeholder="Buscar usuario..." style="max-width:240px" oninput="filterUsers(this.value)">
+  <input id="search-users" placeholder="Buscar usuario..." class="input-search" oninput="filterUsers(this.value)">
   <div class="grow"></div>
-  <input id="new-user-name" placeholder="Nombre nuevo usuario" style="max-width:200px">
+  <input id="new-user-name" placeholder="Nombre nuevo usuario" class="input-narrow">
   <button class="btn btn-primary btn-sm" onclick="createUser()">+ Agregar</button>
 </div>
 
@@ -15,14 +15,13 @@
       <button class="btn btn-danger btn-sm" onclick="deleteUser('<%= tu._id %>')">Eliminar</button>
     </div>
 
-    <!-- Generar certificado -->
     <div class="gen-cert-form mb">
       <div class="row gen-cert-row">
-        <div class="form-group" style="flex:1;min-width:140px;margin-bottom:0">
+        <div class="form-group fg-flex">
           <label>Nombre</label>
           <input id="cert-name-<%= tu._id %>" placeholder="laptop-dev">
         </div>
-        <div class="form-group" style="flex:1;min-width:140px;margin-bottom:0">
+        <div class="form-group fg-flex">
           <label>Endpoint</label>
           <select id="cert-ep-<%= tu._id %>">
             <option value="">Seleccionar...</option>
@@ -31,7 +30,7 @@
             <% } %>
           </select>
         </div>
-        <div class="form-group" style="width:100px;margin-bottom:0">
+        <div class="form-group fg-w100">
           <label>Vigencia</label>
           <select id="cert-dur-<%= tu._id %>">
             <option value="60">2 meses</option>
@@ -40,21 +39,20 @@
             <option value="240">8 meses</option>
           </select>
         </div>
-        <div class="form-group" style="width:80px;margin-bottom:0">
+        <div class="form-group fg-w80">
           <label>↑ KiB</label>
           <input id="cert-limitin-<%= tu._id %>" type="number" min="0" value="10" title="Límite subida en KiB (0 = ilimitado)">
         </div>
-        <div class="form-group" style="width:80px;margin-bottom:0">
+        <div class="form-group fg-w80">
           <label>↓ KiB</label>
           <input id="cert-limitout-<%= tu._id %>" type="number" min="0" value="50" title="Límite bajada en KiB (0 = ilimitado)">
         </div>
-        <div class="form-group" style="margin-bottom:0;align-self:flex-end">
+        <div class="form-group fg-end">
           <button class="btn btn-primary btn-sm" onclick="generateCert('<%= tu._id %>')">Generar</button>
         </div>
       </div>
     </div>
 
-    <!-- Endpoints con sus certificados -->
     <div id="ep-certs-<%= tu._id %>"></div>
   </div>
 <% } %>
@@ -84,5 +82,21 @@
       </div>
     </div>
     <button class="btn btn-primary btn-sm" onclick="saveEditCert()">Guardar</button>
+  </div>
+</div>
+
+<!-- Modal auditoría por certificado -->
+<div id="modal-audit" class="modal-overlay hidden">
+  <div class="modal-box modal-audit-box">
+    <div class="row mb">
+      <strong class="grow" id="modal-audit-title">Auditoría</strong>
+      <select id="audit-offset" class="audit-offset-select" onchange="reloadAudit()">
+        <option value="0">Sin offset</option>
+        <option value="1">1 bit</option><option value="2">2 bits</option><option value="3">3 bits</option>
+        <option value="4">4 bits</option><option value="5">5 bits</option><option value="6">6 bits</option><option value="7">7 bits</option>
+      </select>
+      <button class="btn btn-ghost btn-sm" onclick="closeAudit()">×</button>
+    </div>
+    <div id="audit-logs" class="audit-logs-container"></div>
   </div>
 </div>

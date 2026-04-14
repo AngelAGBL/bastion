@@ -163,7 +163,7 @@ async function loadUserData(uid) {
 
   const epIds = Object.keys(byEp);
   if (!epIds.length) {
-    el.innerHTML = '<p style="color:var(--muted);font-size:.85rem">Sin certificados</p>';
+    el.innerHTML = '<p class="empty-msg">Sin certificados</p>';
     return;
   }
 
@@ -179,16 +179,16 @@ async function loadUserData(uid) {
     const tl = running ? timeLeft(w.until) : null;
     const borderClass = running ? " ep-active" : "";
 
-    const epName = ep ? esc(ep.name) : '<span style="color:var(--danger)">Endpoint eliminado</span>';
+    const epName = ep ? esc(ep.name) : '<span class="ep-deleted">Endpoint eliminado</span>';
     const epProto = ep ? (ep.protocol || 'tcp').toUpperCase() : '';
     const epAddr = ep ? `${epProto} ${esc(ep.host)}:${ep.port}` : '—';
 
-    html += `<div class="card${borderClass}" style="padding:.75rem;margin-bottom:.5rem">`;
+    html += `<div class="card ep-card-inner${borderClass}">`;
     html += `<div class="row mb">`;
     html += `<strong class="grow">${epName}</strong>`;
     if (tl) html += `<span class="time-left" data-until="${w.until}">${tl}</span>`;
     html += `</div>`;
-    html += `<div class="mono mb" style="font-size:.75rem">${epAddr}</div>`;
+    html += `<div class="mono mb ep-addr">${epAddr}</div>`;
 
     // Access controls
     if (w) {
@@ -196,7 +196,7 @@ async function loadUserData(uid) {
       if (running) {
         html += `<button class="btn btn-danger btn-sm" onclick="deactivateAccess('${uid}','${epId}')">Desactivar</button>`;
       } else {
-        html += `<select id="dur-${epId}-${uid}" style="width:auto">${durOpts}</select>`;
+        html += `<select id="dur-${epId}-${uid}" class="dur-select">${durOpts}</select>`;
         html += `<button class="btn btn-primary btn-sm" onclick="activateAccess('${uid}','${epId}')">Activar</button>`;
       }
       html += `</div>`;
@@ -207,7 +207,7 @@ async function loadUserData(uid) {
     for (const c of epCerts) {
       const isExpired = c.expiresAt && new Date(c.expiresAt) < new Date();
       const certTl = !isExpired && c.expiresAt ? timeLeft(c.expiresAt) : null;
-      const expStyle = isExpired ? 'color:var(--danger)' : 'color:var(--muted)';
+      const expClass = isExpired ? 'cert-ttl-expired' : 'cert-ttl-ok';
       const expLabel = isExpired ? 'EXPIRADO' : (certTl || '—');
       const inLimit = c.limitInKiB || 0;
       const outLimit = c.limitOutKiB || 0;
@@ -217,22 +217,22 @@ async function loadUserData(uid) {
       const outLabel = outLimit > 0 ? `↓${(usedOut/1024).toFixed(1)}/${outLimit}KiB` : '↓∞';
       const inExceeded = inLimit > 0 && usedIn >= inLimit * 1024;
       const outExceeded = outLimit > 0 && usedOut >= outLimit * 1024;
-      const inStyle = inExceeded ? 'color:var(--danger)' : 'color:var(--muted)';
-      const outStyle = outExceeded ? 'color:var(--danger)' : 'color:var(--muted)';
+      const inClass = inExceeded ? 'cert-bw-over' : 'cert-bw-ok';
+      const outClass = outExceeded ? 'cert-bw-over' : 'cert-bw-ok';
 
-      html += `<div class="card cert-card" data-cert-id="${c._id}" style="padding:.5rem;background:var(--bg)">`;
-      html += `<div class="row"><strong style="font-size:.85rem;padding-bottom:.5rem;">${esc(c.name)}</strong></div>`;
-      html += `<div class="row" style="font-size:.7rem;gap:.5rem">`;
-      html += `<span class="cert-bw" style="${inStyle};white-space:nowrap">${inLabel}</span> <span class="cert-bw" style="${outStyle};white-space:nowrap">${outLabel}</span>`;
+      html += `<div class="card cert-card cert-card-inner" data-cert-id="${c._id}">`;
+      html += `<div class="row"><strong class="grow cert-name">${esc(c.name)}</strong>`;
+      html += `<button class="btn btn-danger btn-sm" onclick="deleteCert('${c._id}','${uid}')">×</button></div>`;
+      html += `<div class="row cert-info-row">`;
+      html += `<span class="${inClass}">${inLabel}</span> <span class="${outClass}">${outLabel}</span>`;
       html += `<div class="grow"></div>`;
-      html += `<span class="cert-ttl" data-expires="${c.expiresAt || ''}" style="${expStyle};white-space:nowrap">${expLabel}</span>`;
+      html += `<span class="cert-ttl ${expClass}" data-expires="${c.expiresAt || ''}">${expLabel}</span>`;
       html += `</div>`;
-      html += `<div class="row mt" style="gap:.25rem">`;
+      html += `<div class="row mt cert-actions">`;
       html += `<button class="btn btn-ghost btn-sm" onclick="downloadP12('${c._id}')">⬇ .p12</button>`;
       html += `<button class="btn btn-ghost btn-sm" onclick="resetBw('${c._id}','${uid}')" title="Resetear bandwidth">↺</button>`;
-      html += `<div class="grow"></div>`;
+      html += `<button class="btn btn-ghost btn-sm" onclick="openAudit('${c._id}','${esc(c.name)}')" title="Auditoría">📋</button>`;
       html += `<button class="btn btn-ghost btn-sm" onclick="openEditCert('${c._id}','${esc(c.name)}',${inLimit},${outLimit},'${uid}')">✎</button>`;
-      html += `<button class="btn btn-danger btn-sm" onclick="deleteCert('${c._id}','${uid}')">×</button>`;
       html += `</div></div>`;
     }
 
@@ -264,6 +264,155 @@ async function revokeAccess(uid, epId) {
   await api("/api/access/revoke", { method: "POST", body: { tunnelUserId: uid, endpointId: epId } });
   loadUserData(uid);
 }
+
+// --- Audit per cert ---
+let _auditEvtSource = null;
+let _auditCertId = null;
+
+// Control Pictures U+2400–U+2421 for codes 0x00–0x21
+const CTRL_PICS = "␀␁␂␃␄␅␆␇␈␉␊␋␌␍␎␏␐␑␒␓␔␕␖␗␘␙␚␛␜␝␞␟␠␡";
+
+function applyBitOffset(hexStr, offset) {
+  if (!offset || !hexStr) return hexStr;
+  const bytes = hexStr.match(/.{1,2}/g).map(b => parseInt(b, 16));
+  const shifted = new Array(bytes.length);
+  for (let i = 0; i < bytes.length; i++) {
+    const cur = bytes[i];
+    const prev = i > 0 ? bytes[i - 1] : 0;
+    shifted[i] = ((prev << (8 - offset)) | (cur >> offset)) & 0xFF;
+  }
+  return shifted.map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
+function hexToDisplay(hex) {
+  if (!hex) return "";
+  const bytes = hex.match(/.{1,2}/g).map(b => parseInt(b, 16));
+  let out = "";
+  for (const b of bytes) {
+    if (b <= 0x21) {
+      out += CTRL_PICS[b] || "�";
+    } else if (b === 0x7F) {
+      out += "␡";
+    } else if (b >= 0x20 && b < 0x7F) {
+      out += String.fromCharCode(b);
+    } else {
+      // Try UTF-8 decode for this byte — fallback to ?
+      try {
+        const decoded = new TextDecoder("utf-8", { fatal: true }).decode(new Uint8Array([b]));
+        out += decoded;
+      } catch {
+        out += "�";
+      }
+    }
+  }
+  return out;
+}
+
+function hexToDisplayFull(hex) {
+  if (!hex) return "";
+  try {
+    const bytes = new Uint8Array(hex.match(/.{1,2}/g).map(b => parseInt(b, 16)));
+    const text = new TextDecoder("utf-8", { fatal: false }).decode(bytes);
+    let out = "";
+    for (const ch of text) {
+      const code = ch.codePointAt(0);
+      if (code === 0x0A || code === 0x0D || code === 0x09 || code === 0x20) {
+        // Space, newline, carriage return, tab — print as-is
+        out += ch;
+      } else if (code <= 0x20) {
+        out += CTRL_PICS[code] || "�";
+      } else if (code === 0x7F) {
+        out += "␡";
+      } else if (code === 0xFFFD) {
+        out += "�";
+      } else {
+        out += ch;
+      }
+    }
+    return out;
+  } catch { return hex; }
+}
+
+function getAuditOffset() {
+  try {
+    const sel = document.getElementById("audit-offset");
+    return sel ? Number(sel.value) || 0 : 0;
+  } catch { return 0; }
+}
+
+function renderLogRow(log) {
+  const d = new Date(log.ts);
+  const date = d.toLocaleDateString("es");
+  const time = d.toLocaleTimeString("es");
+  const dir = log.direction === "upload" ? "↑" : "↓";
+  const dirClass = log.direction === "upload" ? "dir-up" : "dir-down";
+  const offset = getAuditOffset();
+  const hex = applyBitOffset(log.rawHex, offset);
+  const content = hexToDisplayFull(hex).replace(/</g, "&lt;");
+  return `<div class="audit-row">
+    <div class="audit-meta">
+      <div>${esc(date)}</div>
+      <div>${esc(time)}</div>
+      <div class="${dirClass}">${dir} ${log.bytes}</div>
+    </div>
+    <div class="audit-content">${content}</div>
+  </div>`;
+}
+
+let _auditLogs = []; // cached for re-render on offset change
+
+async function openAudit(certId, certName) {
+  _auditCertId = certId;
+  const titleEl = document.getElementById("modal-audit-title");
+  const offsetEl = document.getElementById("audit-offset");
+  const logsEl = document.getElementById("audit-logs");
+  const modalEl = document.getElementById("modal-audit");
+  if (!titleEl || !logsEl || !modalEl) return;
+  titleEl.textContent = "Auditoría: " + certName;
+  if (offsetEl) offsetEl.value = "0";
+  logsEl.innerHTML = "Cargando...";
+  modalEl.classList.remove("hidden");
+
+  if (_auditEvtSource) { _auditEvtSource.close(); _auditEvtSource = null; }
+
+  try {
+    const logs = await api(`/api/certs/${certId}/audit`);
+    _auditLogs = logs.reverse();
+    logsEl.innerHTML = _auditLogs.length ? _auditLogs.map(renderLogRow).join("") : '<span class="empty-msg">Sin registros</span>';
+    logsEl.scrollTop = logsEl.scrollHeight;
+  } catch { logsEl.innerHTML = "Error cargando logs"; }
+
+  _auditEvtSource = new EventSource(`/api/certs/${certId}/audit/events`);
+  _auditEvtSource.onmessage = (e) => {
+    try {
+      const log = JSON.parse(e.data);
+      _auditLogs.push(log);
+      const placeholder = logsEl.querySelector("span");
+      if (placeholder && placeholder.textContent === "Sin registros") logsEl.innerHTML = "";
+      logsEl.insertAdjacentHTML("beforeend", renderLogRow(log));
+      logsEl.scrollTop = logsEl.scrollHeight;
+    } catch {}
+  };
+}
+
+function reloadAudit() {
+  const logsEl = document.getElementById("audit-logs");
+  if (!_auditLogs.length) return;
+  logsEl.innerHTML = _auditLogs.map(renderLogRow).join("");
+  logsEl.scrollTop = logsEl.scrollHeight;
+}
+
+function closeAudit() {
+  document.getElementById("modal-audit").classList.add("hidden");
+  if (_auditEvtSource) { _auditEvtSource.close(); _auditEvtSource = null; }
+  _auditLogs = [];
+  _auditCertId = null;
+}
+
+// Close audit modal on overlay click
+document.getElementById("modal-audit")?.addEventListener("click", e => {
+  if (e.target.id === "modal-audit") closeAudit();
+});
 
 // Countdown + auto-refresh on expiry (every 1s for timers)
 setInterval(() => {

@@ -9,11 +9,11 @@
         <label>Host</label>
         <input name="host" placeholder="192.168.1.10" required>
       </div>
-      <div style="width:120px" class="form-group">
+      <div class="form-group fg-w120">
         <label>Puerto</label>
         <input name="port" type="number" placeholder="5432" required>
       </div>
-      <div style="width:90px" class="form-group">
+      <div class="form-group fg-w90">
         <label>Protocolo</label>
         <select name="protocol">
           <option value="tcp" selected>TCP</option>
@@ -27,12 +27,12 @@
 
 <div class="endpoints-grid">
 <% for (const ep of endpoints) { %>
-<div class="card" id="ep-<%= ep._id %>" style="margin-bottom:0">
+<div class="card ep-card-no-mb" id="ep-<%= ep._id %>">
   <div class="row mb">
     <strong class="grow" id="ep-name-<%= ep._id %>"><%= ep.name %></strong>
     <span class="badge" id="ep-proto-<%= ep._id %>"><%= (ep.protocol || 'tcp').toUpperCase() %></span>
     <button class="btn btn-ghost btn-sm" onclick="openEditEp('<%= ep._id %>','<%= ep.name %>','<%= ep.host %>',<%= ep.port %>,'<%= ep.protocol || 'tcp' %>')">✎</button>
-    <form method="POST" action="/dashboard/endpoints/<%= ep._id %>/delete" style="margin:0">
+    <form method="POST" action="/dashboard/endpoints/<%= ep._id %>/delete" class="inline-form">
       <button type="submit" class="btn btn-danger btn-sm" onclick="return confirm('¿Eliminar endpoint?')">Eliminar</button>
     </form>
   </div>
@@ -58,11 +58,11 @@
         <label>Host</label>
         <input id="modal-ep-host">
       </div>
-      <div style="width:120px" class="form-group">
+      <div class="form-group fg-w120">
         <label>Puerto</label>
         <input id="modal-ep-port" type="number">
       </div>
-      <div style="width:90px" class="form-group">
+      <div class="form-group fg-w90">
         <label>Protocolo</label>
         <select id="modal-ep-proto">
           <option value="tcp">TCP</option>

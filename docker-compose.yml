@@ -5,8 +5,6 @@ services:
       - mongo_data:/data/db
     environment:
       GLIBC_TUNABLES: glibc.cpu.hwcaps=-SHSTK
-    ports:
-      - "27017:27017"
 
   app:
     image: bastion
@@ -22,6 +20,7 @@ services:
       MONGO_URI: mongodb://mongo:27017/bastion
       JWT_SECRET: change-me-to-a-random-secret-at-least-32-chars!!
       WSHOST: localhost:3001
+      TLS_MODE: direct
     volumes:
       - ./src:/app/src:z
       - ./views:/app/views:z

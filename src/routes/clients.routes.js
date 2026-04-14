@@ -153,6 +153,35 @@ export function registerClientsRoutes(app) {
     res.json(r);
   });
 
+  // --- Audit per cert ---
+  app.get("/api/certs/:id/audit", authMiddleware, async (req, res) => {
+    const db = getDB();
+    const logs = await db.collection("audit_logs")
+      .find({ certId: new ObjectId(req.params.id) })
+      .sort({ ts: -1 })
+      .limit(200)
+      .toArray();
+    res.json(logs);
+  });
+
+  // SSE: real-time audit logs filtered by certId
+  app.get("/api/certs/:id/audit/events", authMiddleware, (req, res) => {
+    const certId = req.params.id;
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      "Connection": "keep-alive",
+    });
+    res.write(":\n\n");
+    const handler = (data) => {
+      if (String(data.certId) === certId) {
+        res.write(`data: ${JSON.stringify(data)}\n\n`);
+      }
+    };
+    bus.on("audit:log", handler);
+    req.on("close", () => bus.off("audit:log", handler));
+  });
+
   app.delete("/api/certs/:id", authMiddleware, async (req, res) => {
     const db = getDB();
     await db.collection("certificates").deleteOne({ _id: new ObjectId(req.params.id) });

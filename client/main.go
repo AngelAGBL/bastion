@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
@@ -41,6 +42,26 @@ func statusIcon(status string) fyne.Resource {
 	default:
 		return theme.MediaStopIcon()
 	}
+}
+
+func fmtDuration(secs int) string {
+	if secs <= 0 {
+		return "0s"
+	}
+	d := secs / 86400
+	h := (secs % 86400) / 3600
+	m := (secs % 3600) / 60
+	s := secs % 60
+	if d > 0 {
+		return fmt.Sprintf("%dd %dh", d, h)
+	}
+	if h > 0 {
+		return fmt.Sprintf("%dh %dm", h, m)
+	}
+	if m > 0 {
+		return fmt.Sprintf("%dm %ds", m, s)
+	}
+	return fmt.Sprintf("%ds", s)
 }
 
 func bwStatusText(t *tunnel) (string, bool, bool) {
@@ -101,13 +122,13 @@ func main() {
 			addrL := widget.NewLabel("addr")
 			addrL.TextStyle = fyne.TextStyle{Monospace: true}
 			statusL := widget.NewLabel("status")
-			statusL.Importance = widget.LowImportance
+			statusL.Importance = widget.MediumImportance
 			bwUpL := widget.NewLabel("bw-up")
 			bwUpL.TextStyle = fyne.TextStyle{Monospace: true}
-			bwUpL.Importance = widget.LowImportance
+			bwUpL.Importance = widget.MediumImportance
 			bwDownL := widget.NewLabel("bw-down")
 			bwDownL.TextStyle = fyne.TextStyle{Monospace: true}
-			bwDownL.Importance = widget.LowImportance
+			bwDownL.Importance = widget.MediumImportance
 			actionBtn := widget.NewButton("Detener", nil)
 			editBtn := widget.NewButtonWithIcon("", theme.DocumentCreateIcon(), nil)
 			removeBtn := widget.NewButtonWithIcon("", theme.DeleteIcon(), nil)
@@ -120,7 +141,15 @@ func main() {
 			botLeft := container.NewHBox(statusL)
 			botRight := container.NewHBox(actionBtn, editBtn, removeBtn)
 			botRow := container.NewBorder(nil, nil, botLeft, botRight, container.NewHBox(bwUpL, bwDownL))
-			return container.NewVBox(topRow, botRow)
+			// Row 3: cert time | endpoint time
+			certTimeL := widget.NewLabel("cert")
+			certTimeL.TextStyle = fyne.TextStyle{Monospace: true}
+			certTimeL.Importance = widget.MediumImportance
+			epTimeL := widget.NewLabel("ep")
+			epTimeL.TextStyle = fyne.TextStyle{Monospace: true}
+			epTimeL.Importance = widget.MediumImportance
+			timeRow := container.NewHBox(certTimeL, epTimeL)
+			return container.NewVBox(topRow, botRow, timeRow)
 		},
 		func(id widget.ListItemID, obj fyne.CanvasObject) {
 			tunnelsMu.Lock()
@@ -134,6 +163,7 @@ func main() {
 			vbox := obj.(*fyne.Container)
 			topRow := vbox.Objects[0].(*fyne.Container)
 			botRow := vbox.Objects[1].(*fyne.Container)
+			timeRowBox := vbox.Objects[2].(*fyne.Container)
 
 			topLeftBox := topRow.Objects[1].(*fyne.Container)
 			icon := topLeftBox.Objects[0].(*widget.Icon)
@@ -166,15 +196,16 @@ func main() {
 			if active {
 				statusL.Importance = widget.SuccessImportance
 			} else {
-				statusL.Importance = widget.LowImportance
+				statusL.Importance = widget.MediumImportance
 			}
+			statusL.Refresh()
 			bwText, inOver, outOver := bwStatusText(t)
 			parts := strings.SplitN(bwText, " ", 2)
 			bwUpL.SetText(parts[0])
 			if inOver {
 				bwUpL.Importance = widget.DangerImportance
 			} else {
-				bwUpL.Importance = widget.LowImportance
+				bwUpL.Importance = widget.MediumImportance
 			}
 			bwUpL.Refresh()
 			if len(parts) > 1 {
@@ -183,9 +214,26 @@ func main() {
 			if outOver {
 				bwDownL.Importance = widget.DangerImportance
 			} else {
-				bwDownL.Importance = widget.LowImportance
+				bwDownL.Importance = widget.MediumImportance
 			}
 			bwDownL.Refresh()
+			// Row 3: times
+			certTimeL := timeRowBox.Objects[0].(*widget.Label)
+			epTimeL := timeRowBox.Objects[1].(*widget.Label)
+			cs := t.certSecsLeft()
+			t.mu.Lock()
+			es := t.endpointSecs
+			t.mu.Unlock()
+			if cs >= 0 {
+				certTimeL.SetText(fmt.Sprintf("cert: %s", fmtDuration(cs)))
+			} else {
+				certTimeL.SetText("cert: ∞")
+			}
+			if es >= 0 {
+				epTimeL.SetText(fmt.Sprintf("endpoint: %s", fmtDuration(es)))
+			} else {
+				epTimeL.SetText("")
+			}
 			if active {
 				actionBtn.SetText("Detener")
 				actionBtn.Importance = widget.DangerImportance
@@ -195,6 +243,7 @@ func main() {
 				actionBtn.Importance = widget.SuccessImportance
 				actionBtn.OnTapped = func() { showReconnectDialog(w, t) }
 			}
+			actionBtn.Refresh()
 			capturedID := id
 			editBtn.OnTapped = func() { showEditDialog(w, t) }
 			removeBtn.OnTapped = func() {
@@ -209,6 +258,8 @@ func main() {
 		},
 	)
 
+	listWidget.OnSelected = func(id widget.ListItemID) { listWidget.UnselectAll() }
+
 	w.SetContent(container.NewBorder(container.NewVBox(header, widget.NewSeparator()), nil, nil, nil, listWidget))
 	w.SetOnDropped(func(pos fyne.Position, uris []fyne.URI) {
 		for _, uri := range uris {
@@ -218,14 +269,44 @@ func main() {
 
 	cfg := loadConfig()
 	for _, st := range cfg.Tunnels {
+		var certExp time.Time
+		if st.CertExpiry != "" {
+			certExp, _ = time.Parse(time.RFC3339, st.CertExpiry)
+		}
 		allTunnels = append(allTunnels, &tunnel{
 			Name: st.Name, Server: st.Server, Port: st.Port, Protocol: st.Protocol,
 			P12Path: st.P12Path, BindCIDR: st.BindCIDR,
+			certExpiry: certExp,
 			status: "detenido", limitInKiB: st.LimitInKiB, limitOutKiB: st.LimitOutKiB,
 			usedInBytes: st.UsedInBytes, usedOutBytes: st.UsedOutBytes,
 			stopped: true, done: make(chan struct{}),
 		})
 	}
 	refreshList()
+
+	// Global 1s ticker to update cert/endpoint countdowns
+	go func() {
+		ticker := time.NewTicker(1 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			tunnelsMu.Lock()
+			any := false
+			for _, t := range allTunnels {
+				t.mu.Lock()
+				if t.endpointSecs > 0 {
+					t.endpointSecs--
+				}
+				if !t.certExpiry.IsZero() || t.endpointSecs >= 0 {
+					any = true
+				}
+				t.mu.Unlock()
+			}
+			tunnelsMu.Unlock()
+			if any {
+				refreshList()
+			}
+		}
+	}()
+
 	w.ShowAndRun()
 }

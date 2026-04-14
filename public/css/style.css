@@ -90,3 +90,42 @@ label{display:block;font-size:.8rem;color:var(--muted);margin-bottom:.25rem}
 
 .endpoints-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:.5rem;max-width:100%}
 @media(max-width:900px){.endpoints-grid{grid-template-columns:repeat(2,1fr)}}
+
+.audit-row{padding:.5rem 0;border-bottom:1px solid var(--border);display:flex;align-items:flex-start;gap:.75rem;font-size:.9rem;font-family:monospace}
+.audit-row:last-child{border-bottom:none}
+.audit-meta{flex-shrink:0;font-size:.8rem;color:var(--muted);line-height:1.4;text-align:right;min-width:85px}
+.audit-content{white-space:pre-wrap;word-break:break-all;flex:1;line-height:1.4;background:#000;color:#ccc;padding:.3rem .5rem;border-radius:4px}
+
+/* Clients page — extracted from inline styles */
+.empty-msg{color:var(--muted);font-size:.85rem}
+.ep-deleted{color:var(--danger)}
+.ep-card-inner{padding:.75rem;margin-bottom:.5rem}
+.ep-addr{font-size:.75rem}
+.dur-select{width:auto}
+.cert-card-inner{padding:.5rem;background:var(--bg)}
+.cert-name{font-size:.85rem}
+.cert-info-row{font-size:.7rem;gap:.5rem}
+.cert-bw{white-space:nowrap}
+.cert-bw-over{color:var(--danger);white-space:nowrap}
+.cert-bw-ok{color:var(--muted);white-space:nowrap}
+.cert-ttl{white-space:nowrap}
+.cert-ttl-expired{color:var(--danger);white-space:nowrap}
+.cert-ttl-ok{color:var(--muted);white-space:nowrap}
+.cert-actions{gap:.25rem}
+
+/* Views — extracted from inline styles */
+.input-narrow{max-width:200px}
+.input-search{max-width:240px}
+.admin-card{padding:.75rem}
+.admin-self{font-size:.8rem;color:var(--muted)}
+.fg-flex{flex:1;min-width:140px;margin-bottom:0}
+.fg-w100{width:100px;margin-bottom:0}
+.fg-w80{width:80px;margin-bottom:0}
+.fg-w120{width:120px}
+.fg-w90{width:90px}
+.fg-end{margin-bottom:0;align-self:flex-end}
+.inline-form{margin:0}
+.ep-card-no-mb{margin-bottom:0}
+.modal-audit-box{max-width:1000px;max-height:90vh;display:flex;flex-direction:column}
+.audit-offset-select{width:auto;font-size:.8rem}
+.audit-logs-container{flex:1;overflow-y:auto;background:var(--bg);border-radius:6px;padding:.5rem}

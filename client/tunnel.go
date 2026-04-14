@@ -4,6 +4,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"time"
 )
 
 type tunnel struct {
@@ -20,6 +21,8 @@ type tunnel struct {
 	limitOutKiB  int
 	usedInBytes  int64
 	usedOutBytes int64
+	certExpiry   time.Time // from p12 cert NotAfter
+	endpointSecs int       // seconds until endpoint window closes, -1 = unknown
 	mu           sync.Mutex
 	stopped      bool
 	done         chan struct{}
@@ -84,9 +87,50 @@ func (t *tunnel) setBandwidth(limitIn, limitOut int, usedIn, usedOut int64) {
 	tunnelsMu.Unlock()
 }
 
+func (t *tunnel) setEndpointTime(secs int) {
+	t.mu.Lock()
+	t.endpointSecs = secs
+	t.mu.Unlock()
+}
+
+func (t *tunnel) certSecsLeft() int {
+	if t.certExpiry.IsZero() {
+		return -1
+	}
+	s := int(time.Until(t.certExpiry).Seconds())
+	if s < 0 {
+		return 0
+	}
+	return s
+}
+
 func (t *tunnel) addBytes(upload, download int64) {
 	t.mu.Lock()
 	t.usedInBytes += upload
 	t.usedOutBytes += download
 	t.mu.Unlock()
+	markDirty()
+}
+
+// Debounced config save — avoids writing on every packet
+var (
+	_dirty     bool
+	_dirtyOnce sync.Once
+)
+
+func markDirty() {
+	_dirty = true
+	_dirtyOnce.Do(func() {
+		go func() {
+			for {
+				time.Sleep(5 * time.Second)
+				if _dirty {
+					_dirty = false
+					tunnelsMu.Lock()
+					saveConfig(allTunnels)
+					tunnelsMu.Unlock()
+				}
+			}
+		}()
+	})
 }

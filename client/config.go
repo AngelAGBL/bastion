@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 type savedConfig struct {
@@ -17,6 +18,7 @@ type savedTunnel struct {
 	Protocol     string `json:"protocol"`
 	P12Path      string `json:"p12_path"`
 	BindCIDR     string `json:"bind_cidr"`
+	CertExpiry   string `json:"cert_expiry,omitempty"`
 	LimitInKiB   int    `json:"limit_in_kib"`
 	LimitOutKiB  int    `json:"limit_out_kib"`
 	UsedInBytes  int64  `json:"used_in_bytes"`
@@ -38,9 +40,13 @@ func loadConfig() savedConfig {
 func saveConfig(tunnels []*tunnel) {
 	var cfg savedConfig
 	for _, t := range tunnels {
+		expStr := ""
+		if !t.certExpiry.IsZero() {
+			expStr = t.certExpiry.Format(time.RFC3339)
+		}
 		cfg.Tunnels = append(cfg.Tunnels, savedTunnel{
 			Name: t.Name, Server: t.Server, Port: t.Port, Protocol: t.Protocol,
-			P12Path: t.P12Path, BindCIDR: t.BindCIDR,
+			P12Path: t.P12Path, BindCIDR: t.BindCIDR, CertExpiry: expStr,
 			LimitInKiB:  t.limitInKiB, LimitOutKiB: t.limitOutKiB,
 			UsedInBytes: t.usedInBytes, UsedOutBytes: t.usedOutBytes,
 		})
