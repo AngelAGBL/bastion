@@ -7,6 +7,7 @@ import { ObjectId } from "mongodb";
 import { ensureCA, generateServerCert, getCACert } from "./services/ca.js";
 import { getDB } from "./services/db.js";
 import bus from "./services/events.js";
+import { registerEpClient, unregisterEpClient, getEpClient } from "./services/ep-clients.js";
 
 const PROXY_MODE = process.env.TLS_MODE === "proxy";
 const INTERNAL_PORT = 19876;
@@ -147,7 +148,118 @@ export async function startWSServer(port) {
     }
   });
 
-  // --- WebSocket ---
+  // --- Endpoint Client WS (reverse tunnel) ---
+  // An endpoint client connects here with its mTLS cert.
+  // The server looks up which endpoint this cert belongs to and registers it.
+  // Traffic is multiplexed: [4-byte channelID][payload]
+  const epChannels = new Map(); // channelId → { tunnelWs }
+
+  uwsApp.ws("/ep", {
+    maxPayloadLength: 16 * 1024 * 1024,
+    idleTimeout: 120,
+    sendPingsAutomatically: true,
+
+    upgrade: async (res, req, context) => {
+      let aborted = false;
+      res.onAborted(() => { aborted = true; });
+
+      const fp = extractFingerprint(req, res);
+      const secKey = headerStr(req, "sec-websocket-key");
+      const secProto = headerStr(req, "sec-websocket-protocol");
+      const secExt = headerStr(req, "sec-websocket-extensions");
+      const localPort = headerStr(req, "x-local-port") || "0";
+
+      if (!fp) {
+        if (!aborted) res.cork(() => res.writeStatus("403 Forbidden").end());
+        return;
+      }
+
+      try {
+        const db = getDB();
+        // Find the endpoint cert — ep-client certs have endpointId set
+        const cert = await db.collection("certificates").findOne({ fingerprint: fp });
+        if (!cert || !cert.endpointId) {
+          if (!aborted) res.cork(() => res.writeStatus("403 Forbidden").end());
+          return;
+        }
+
+        const endpoint = await db.collection("endpoints").findOne({ _id: cert.endpointId });
+        if (!endpoint) {
+          if (!aborted) res.cork(() => res.writeStatus("403 Forbidden").end());
+          return;
+        }
+
+        log(`EP-CLIENT upgrade: ${cert.name} → endpoint ${endpoint.name} (local :${localPort})`);
+
+        if (!aborted) {
+          res.cork(() => {
+            res.upgrade(
+              { cert, endpoint, fingerprint: fp, localPort, role: "ep-client" },
+              secKey, secProto, secExt, context
+            );
+          });
+        }
+      } catch (e) {
+        log("ep-client upgrade error:", e.message);
+        if (!aborted) res.cork(() => res.writeStatus("500").end());
+      }
+    },
+
+    open: (ws) => {
+      const { cert, endpoint } = ws.getUserData();
+      const epId = String(endpoint._id);
+      log(`EP-CLIENT online: ${cert.name} → ${endpoint.name}`);
+
+      // Register this ep-client
+      registerEpClient(epId, ws, cert.name);
+      ws._epId = epId;
+      ws._channels = new Map(); // channelId → tunnelWs
+
+      // Update endpoint status in DB
+      const db = getDB();
+      db.collection("endpoints").updateOne({ _id: endpoint._id }, { $set: { online: true } }).catch(() => {});
+      bus.emit("ep:status", { endpointId: epId, online: true });
+    },
+
+    message: (ws, message) => {
+      const buf = Buffer.from(message);
+      if (buf.length < 4) return;
+
+      const channelId = buf.readUInt32BE(0);
+      const payload = buf.subarray(4);
+
+      // Find the tunnel WS for this channel and forward data
+      const tunnelWs = ws._channels?.get(channelId);
+      if (tunnelWs) {
+        try { tunnelWs.send(payload, true); } catch {}
+      }
+    },
+
+    close: (ws, code) => {
+      const { cert, endpoint } = ws.getUserData();
+      const epId = ws._epId;
+      log(`EP-CLIENT offline: ${cert.name} code=${code}`);
+
+      unregisterEpClient(epId);
+
+      // Close all channels
+      if (ws._channels) {
+        for (const [, tunnelWs] of ws._channels) {
+          try { tunnelWs.close(); } catch {}
+        }
+        ws._channels.clear();
+      }
+
+      // Update endpoint status
+      const db = getDB();
+      db.collection("endpoints").updateOne({ _id: endpoint._id }, { $set: { online: false } }).catch(() => {});
+      bus.emit("ep:status", { endpointId: epId, online: false });
+    },
+  });
+
+  let nextChannelId = 1;
+
+  // --- Tunnel Client WebSocket ---
   uwsApp.ws("/*", {
     maxPayloadLength: 16 * 1024 * 1024,
     idleTimeout: 0,
@@ -252,7 +364,22 @@ export async function startWSServer(port) {
 
       const proto = endpoint.protocol || "tcp";
 
-      if (proto === "udp") {
+      // Check if this endpoint has a connected ep-client (reverse tunnel)
+      const epClient = getEpClient(String(endpoint._id));
+
+      if (epClient && epClient.ws) {
+        // Route through ep-client via multiplexed WS
+        const channelId = nextChannelId++;
+        if (nextChannelId > 0x7FFFFFFF) nextChannelId = 1;
+
+        epClient.ws._channels?.set(channelId, ws);
+        ws._epClientWs = epClient.ws;
+        ws._channelId = channelId;
+        ws._trackUp = trackUp;
+        ws._trackDown = trackDown;
+
+        log(`routed via ep-client channel=${channelId}`);
+      } else if (proto === "udp") {
         const udp = dgram.createSocket("udp4");
         udp.on("message", (msg) => { try { ws.send(msg, true); } catch {} trackDown(msg); });
         udp.on("error", (e) => { log(`udp err: ${e.message}`); try { ws.close(); } catch {} });
@@ -276,7 +403,13 @@ export async function startWSServer(port) {
 
     message: (ws, message) => {
       const chunk = Buffer.from(message);
-      if (ws._udp) {
+      if (ws._epClientWs) {
+        // Forward to ep-client with channel ID prefix
+        const framed = Buffer.allocUnsafe(4 + chunk.length);
+        framed.writeUInt32BE(ws._channelId, 0);
+        chunk.copy(framed, 4);
+        try { ws._epClientWs.send(framed, true); } catch {}
+      } else if (ws._udp) {
         const { endpoint } = ws.getUserData();
         ws._udp.send(chunk, endpoint.port, endpoint.host);
       } else if (ws._tcp) {
@@ -292,6 +425,14 @@ export async function startWSServer(port) {
       releaseCertLock(fingerprint);
       const socks = certSockets.get(fingerprint);
       if (socks) { socks.delete(ws); if (socks.size === 0) certSockets.delete(fingerprint); }
+      // Clean up ep-client channel
+      if (ws._epClientWs && ws._channelId) {
+        ws._epClientWs._channels?.delete(ws._channelId);
+        // Send close signal to ep-client: channelId with 0-length payload
+        const closeFrame = Buffer.allocUnsafe(4);
+        closeFrame.writeUInt32BE(ws._channelId | 0x80000000, 0); // high bit = close
+        try { ws._epClientWs.send(closeFrame, true); } catch {}
+      }
       if (ws._tcp) ws._tcp.destroy();
       if (ws._udp) { try { ws._udp.close(); } catch {} }
     },

@@ -1,4 +1,7 @@
-<div class="card">
+<div class="row mb" style="gap:1rem;align-items:flex-start">
+<!-- Endpoint directo -->
+<div class="card" style="flex:1">
+  <strong class="mb" style="display:block;font-size:.85rem;color:var(--muted)">Endpoint directo</strong>
   <form method="POST" action="/dashboard/endpoints">
     <div class="form-group">
       <label>Nombre</label>
@@ -25,18 +28,40 @@
   </form>
 </div>
 
+<!-- Endpoint cliente (reverse tunnel) -->
+<div class="card" style="flex:1">
+  <strong class="mb" style="display:block;font-size:.85rem;color:var(--muted)">Cliente-Endpoint (reverse)</strong>
+  <div class="form-group">
+    <label>Nombre</label>
+    <input id="ep-client-name" placeholder="Mi servidor local">
+  </div>
+  <button class="btn btn-primary" onclick="createEpClient()">Crear cliente-endpoint</button>
+</div>
+</div>
+
 <div class="endpoints-grid">
 <% for (const ep of endpoints) { %>
 <div class="card ep-card-no-mb" id="ep-<%= ep._id %>">
   <div class="row mb">
+    <% const isOnline = epClients && epClients[String(ep._id)]; %>
+    <span class="ep-status-dot" id="ep-dot-<%= ep._id %>" style="width:8px;height:8px;border-radius:50%;background:<%= isOnline ? 'var(--success)' : 'var(--border)' %>;flex-shrink:0"></span>
     <strong class="grow" id="ep-name-<%= ep._id %>"><%= ep.name %></strong>
-    <span class="badge" id="ep-proto-<%= ep._id %>"><%= (ep.protocol || 'tcp').toUpperCase() %></span>
-    <button class="btn btn-ghost btn-sm" onclick="openEditEp('<%= ep._id %>','<%= ep.name %>','<%= ep.host %>',<%= ep.port %>,'<%= ep.protocol || 'tcp' %>')">✎</button>
+    <% if (ep.virtual) { %>
+      <span class="badge" style="background:var(--primary);color:#fff">REVERSE</span>
+      <button class="btn btn-ghost btn-sm" onclick="downloadEpP12('<%= ep._id %>')">⬇ .p12</button>
+    <% } else { %>
+      <span class="badge" id="ep-proto-<%= ep._id %>"><%= (ep.protocol || 'tcp').toUpperCase() %></span>
+      <button class="btn btn-ghost btn-sm" onclick="openEditEp('<%= ep._id %>','<%= ep.name %>','<%= ep.host %>',<%= ep.port %>,'<%= ep.protocol || 'tcp' %>')">✎</button>
+    <% } %>
     <form method="POST" action="/dashboard/endpoints/<%= ep._id %>/delete" class="inline-form">
       <button type="submit" class="btn btn-danger btn-sm" onclick="return confirm('¿Eliminar endpoint?')">Eliminar</button>
     </form>
   </div>
-  <div class="mono" id="ep-addr-<%= ep._id %>"><%= ep.host %>:<%= ep.port %></div>
+  <% if (!ep.virtual) { %>
+    <div class="mono" id="ep-addr-<%= ep._id %>"><%= ep.host %>:<%= ep.port %></div>
+  <% } else { %>
+    <div class="mono" style="color:var(--muted)">reverse tunnel — <span id="ep-status-<%= ep._id %>"><%= isOnline ? 'online' : 'offline' %></span></div>
+  <% } %>
 </div>
 <% } %>
 </div>
@@ -75,6 +100,44 @@
 </div>
 
 <script>
+async function createEpClient() {
+  const input = document.getElementById("ep-client-name");
+  const name = input.value.trim();
+  if (!name) return input.focus();
+  try {
+    const res = await fetch("/api/ep-clients", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    if (!res.ok) { const e = await res.json(); throw new Error(e.error); }
+    input.value = "";
+    location.reload();
+  } catch (e) { alert("Error: " + e.message); }
+}
+
+async function downloadEpP12(epId) {
+  const password = prompt("Contraseña para el .p12 (vacío = sin contraseña):", "");
+  if (password === null) return;
+  try {
+    const res = await fetch(`/api/ep-clients/${epId}/p12`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password }),
+    });
+    if (!res.ok) { const e = await res.json(); throw new Error(e.error); }
+    const blob = await res.blob();
+    const cd = res.headers.get("content-disposition") || "";
+    const match = cd.match(/filename=(.+)/);
+    const filename = match ? match[1] : "ep-client.p12";
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  } catch (e) { alert("Error: " + e.message); }
+}
+
 function openEditEp(id, name, host, port, protocol) {
   document.getElementById("modal-ep-id").value = id;
   document.getElementById("modal-ep-name").value = name;
@@ -107,4 +170,16 @@ async function saveEp() {
     closeEpModal();
   } catch { alert("Error al guardar"); }
 }
+
+// SSE: real-time endpoint client status
+const epEvt = new EventSource("/api/endpoints/events");
+epEvt.onmessage = (e) => {
+  try {
+    const { endpointId, online } = JSON.parse(e.data);
+    const dot = document.getElementById("ep-dot-" + endpointId);
+    if (dot) dot.style.background = online ? "var(--success)" : "var(--border)";
+    const statusEl = document.getElementById("ep-status-" + endpointId);
+    if (statusEl) statusEl.textContent = online ? "online" : "offline";
+  } catch {}
+};
 </script>

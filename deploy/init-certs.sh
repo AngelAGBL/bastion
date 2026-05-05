@@ -4,7 +4,7 @@
 
 set -e
 
-CA_DIR="./ca_data"
+CA_DIR="./certs"
 mkdir -p "$CA_DIR"
 
 # --- CA certs (mTLS client verification) ---

@@ -25,7 +25,7 @@ services:
       - ./src:/app/src:z
       - ./views:/app/views:z
       - ./public:/app/public:z
-      - ./ca_data:/app/data/ca
+      - ./ca_data:/app/data/ca:z
     depends_on:
       - mongo
 
